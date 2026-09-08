@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: desertica
+      POSTGRES_PASSWORD: desertica
+      POSTGRES_DB: desertica
+    ports:
+      - '5432:5432'
+    volumes:
+      - desertica_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U desertica -d desertica']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  desertica_pg:

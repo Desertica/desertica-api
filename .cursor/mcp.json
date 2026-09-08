@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "prisma-local": {
+      "command": "npx",
+      "args": ["-y", "prisma", "mcp"]
+    },
+    "prisma-remote": {
+      "url": "https://mcp.prisma.io/mcp"
+    },
+    "postgres": {
+      "command": "npx",
+      "args": ["-y", "@henkey/postgres-mcp-server"],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "postgresql://desertica:desertica@localhost:5432/desertica?schema=public"
+      }
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp"]
+    }
+  }
+}

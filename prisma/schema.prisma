@@ -1,0 +1,22 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tour {
+  id             String   @id @default(uuid())
+  slug           String   @unique
+  title          String
+  description    String?
+  priceCents     Int
+  currency       String   @default("MXN")
+  durationHours  Int
+  isPublished    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
