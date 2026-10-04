@@ -365,30 +365,30 @@ model Hold {
 }
 
 model Booking {
-  id                   String         @id @default(uuid())
+  id                   String               @id @default(uuid())
   /// Referencia pública corta (p. ej. "DST-7K4Q9M").
-  reference            String         @unique
-  status               BookingStatus  @default(PENDING_PAYMENT)
-  source               BookingSource  @default(WEB)
+  reference            String               @unique
+  status               BookingStatus        @default(PENDING_PAYMENT)
+  source               BookingSource        @default(WEB)
   departureId          String
-  departure            Departure      @relation(fields: [departureId], references: [id])
+  departure            Departure            @relation(fields: [departureId], references: [id])
   customerId           String
-  customer             Customer       @relation(fields: [customerId], references: [id])
-  holdId               String?        @unique
-  hold                 Hold?          @relation(fields: [holdId], references: [id])
+  customer             Customer             @relation(fields: [customerId], references: [id])
+  holdId               String?              @unique
+  hold                 Hold?                @relation(fields: [holdId], references: [id])
   currency             Currency
   adults               Int
-  children             Int            @default(0)
+  children             Int                  @default(0)
   /// Total a pagar con IGV incluido, tras aplicar la regla de precio.
   totalCents           Int
   /// Monto del depósito cuando se eligió pagar en dos partes.
   depositCents         Int?
-  paidCents            Int            @default(0)
-  refundedCents        Int            @default(0)
+  paidCents            Int                  @default(0)
+  refundedCents        Int                  @default(0)
   /// Regla de precio y desglose usados al reservar (no cambia si cambian las reglas).
   priceSnapshot        Json
   cancellationSnapshot Json
-  locale               String         @default("es")
+  locale               String               @default("es")
   notes                String?
   /// Datos de facturación pedidos al cliente (tipo de comprobante y receptor).
   billing              Json
@@ -404,12 +404,26 @@ model Booking {
   waivers              Waiver[]
   acceptances          Acceptance[]
   notifications        Notification[]
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
+  accessTokens         BookingAccessToken[]
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
 
   @@index([departureId, status])
   @@index([customerId])
   @@index([status, createdAt])
+}
+
+/// Acceso del cliente a "mi reserva". Solo se guarda el hash del token.
+model BookingAccessToken {
+  id         String    @id @default(uuid())
+  bookingId  String
+  booking    Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([bookingId])
 }
 
 model Passenger {
@@ -629,14 +643,21 @@ model Notification {
 // ---------------------------------------------------------------------------
 
 model LegalDocument {
-  id          String            @id @default(uuid())
-  kind        LegalDocumentKind
-  locale      String
-  version     Int
-  /// Slug de la página en el CMS que contiene el texto.
-  cmsSlug     String
-  publishedAt DateTime
-  acceptances Acceptance[]
+  id           String            @id @default(uuid())
+  kind         LegalDocumentKind
+  locale       String
+  version      Int
+  /// Slug de la página en el CMS de donde se tomó el texto.
+  cmsSlug      String
+  /// Título de la página al momento de publicar.
+  title        String
+  /// Texto (Markdown) tal como estaba en el CMS al publicar. Inmutable: es la
+  /// evidencia de lo que aceptó el cliente (un trigger impide modificarlo).
+  textSnapshot String
+  /// SHA-256 (hex) de `title` + `textSnapshot`.
+  contentHash  String
+  publishedAt  DateTime
+  acceptances  Acceptance[]
 
   @@unique([kind, locale, version])
 }
@@ -710,6 +731,22 @@ model Complaint {
   @@index([status, dueAt])
 }
 
+/// Mensajes del formulario de contacto del sitio.
+model ContactMessage {
+  id        String   @id @default(uuid())
+  name      String
+  email     String
+  whatsapp  String?
+  country   String?
+  message   String
+  locale    String?
+  ip        String?
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([handled, createdAt])
+}
+
 /// Consentimiento de cookies por visitante.
 model ConsentRecord {
   id            String   @id @default(uuid())
@@ -741,6 +778,22 @@ model AuditLog {
   createdAt   DateTime @default(now())
 
   @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+/// Respuestas guardadas de POST con `Idempotency-Key`; repetir la clave devuelve la original.
+model IdempotencyRecord {
+  id          String   @id @default(uuid())
+  /// Operación y, si la hay, el actor (p. ej. `createPublicBooking`, `createManualBooking:<userId>`).
+  scope       String
+  key         String
+  /// SHA-256 del cuerpo canónico: la misma clave con otro cuerpo es un error.
+  requestHash String
+  status      Int
+  body        Json?
+  createdAt   DateTime @default(now())
+
+  @@unique([scope, key])
   @@index([createdAt])
 }
 
