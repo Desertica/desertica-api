@@ -39,11 +39,14 @@ export class CmsClient {
     @Inject(KEY_VALUE_STORE) private readonly store: KeyValueStore,
   ) {}
 
-  /** Tours publicados (título en inglés, el idioma por defecto del CMS). */
-  async listTours(options: { fresh?: boolean } = {}): Promise<CmsTour[]> {
+  /** Tours publicados (por defecto en inglés, el idioma por defecto del CMS). */
+  async listTours(
+    options: { fresh?: boolean; locale?: string } = {},
+  ): Promise<CmsTour[]> {
+    const locale = options.locale ?? 'en';
     const rows = await this.cached(
-      'tours',
-      '/api/tours?locale=en&pagination[pageSize]=100&fields[0]=slug&fields[1]=title&fields[2]=durationHours&sort=order:asc',
+      locale === 'en' ? 'tours' : `tours:${locale}`,
+      `/api/tours?locale=${encodeURIComponent(locale)}&pagination[pageSize]=100&fields[0]=slug&fields[1]=title&fields[2]=durationHours&sort=order:asc`,
       options.fresh,
     );
     return rows.flatMap((row) => {

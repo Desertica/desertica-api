@@ -3,6 +3,7 @@ import { paginated, skipTake } from '../../common/pagination/pagination';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
+import { TourTitlesService } from '../cms/tour-titles.service';
 import { normalizeEmail } from '../bookings/booking-support';
 import { toBookingSummary, toCustomerDto } from '../bookings/booking.mappers';
 import { CustomerQuery, UpdateCustomerDto } from '../bookings/dto/booking.dto';
@@ -12,6 +13,7 @@ export class CustomersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly titles: TourTitlesService,
   ) {}
 
   async list(q: CustomerQuery) {
@@ -46,15 +48,20 @@ export class CustomersService {
           orderBy: { createdAt: 'desc' },
           include: {
             customer: true,
-            departure: { include: { tourRef: { select: { slug: true } } } },
+            departure: {
+              include: { tourRef: { select: { slug: true, title: true } } },
+            },
           },
         },
       },
     });
     if (!customer) throw new NotFoundException('Customer not found');
+    const titles = await this.titles.forTours(
+      customer.bookings.map((b) => b.departure.tourRef),
+    );
     return {
       ...toCustomerDto(customer),
-      bookings: customer.bookings.map(toBookingSummary),
+      bookings: customer.bookings.map((b) => toBookingSummary(b, titles)),
     };
   }
 

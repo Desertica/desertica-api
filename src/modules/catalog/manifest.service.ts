@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { pendingCents } from '../../common/money';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TourTitlesService } from '../cms/tour-titles.service';
 import { toDepartureDto } from './catalog.mappers';
 import { SEAT_HOLDING_STATUSES, SeatsService } from './seats.service';
 
@@ -9,6 +10,7 @@ export class ManifestService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly seats: SeatsService,
+    private readonly titles: TourTitlesService,
   ) {}
 
   /**
@@ -17,7 +19,10 @@ export class ManifestService {
    * en la primera fila de cada reserva para no contarlo dos veces.
    */
   async forDeparture(id: string) {
-    const departure = await this.prisma.departure.findUnique({ where: { id } });
+    const departure = await this.prisma.departure.findUnique({
+      where: { id },
+      include: { tourRef: true },
+    });
     if (!departure) throw new NotFoundException('Departure not found');
     const counts = await this.seats.countFor([id]);
 
@@ -82,6 +87,10 @@ export class ManifestService {
         currency: b.currency,
       }));
     });
-    return { departure: toDepartureDto(departure, counts.get(id)), passengers };
+    const titles = await this.titles.forTours([departure.tourRef]);
+    return {
+      departure: toDepartureDto(departure, counts.get(id), titles),
+      passengers,
+    };
   }
 }
