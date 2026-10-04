@@ -8,6 +8,11 @@ import { KEY_VALUE_STORE, KeyValueStore } from './common/cache/key-value-store';
 import { KeyValueThrottlerStorage } from './common/cache/kv-throttler-storage';
 import { buildLoggerParams } from './common/logger/logger.config';
 import { EnvVars, envSchema } from './config/env.validation';
+import { AuditModule } from './modules/audit/audit.module';
+import { AuthGuard } from './modules/auth/auth.guard';
+import { AuthModule } from './modules/auth/auth.module';
+import { RolesModule } from './modules/roles/roles.module';
+import { UsersModule } from './modules/users/users.module';
 import { HealthModule } from './modules/health/health.module';
 import { ToursModule } from './modules/tours/tours.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -48,9 +53,16 @@ import { PrismaModule } from './prisma/prisma.module';
       }),
     }),
     PrismaModule,
+    AuditModule,
+    AuthModule,
+    UsersModule,
+    RolesModule,
     HealthModule,
     ToursModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: APP_GUARD, useClass: AuthGuard },
+  ],
 })
 export class AppModule {}
