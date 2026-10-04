@@ -8,6 +8,11 @@ export const SETTING_DEFINITIONS = {
   depositPercent: { default: 30, min: 0, max: 100 },
   /** Minutos que dura un bloqueo de cupo mientras el cliente completa el pago. */
   holdMinutes: { default: 15, min: 1, max: 120 },
+  /**
+   * Bloqueos de cupo vigentes (sin reserva) que admite una salida a la vez. Frena a quien retiene cupo
+   * con muchas IP; con las demás defensas (captcha y 8 bloqueos por IP cada 15 minutos) deja de ser rentable.
+   */
+  maxActiveHoldsPerDeparture: { default: 10, min: 1, max: 100 },
   /** Tope de reembolso de un operador sin `payments:refund-any`, en centavos. */
   operatorRefundLimitCents: { default: 20000, min: 0, max: 100_000_000 },
   /** Días hábiles de plazo para responder un reclamo (a confirmar con el abogado). */

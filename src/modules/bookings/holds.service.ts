@@ -86,6 +86,31 @@ export class HoldsService {
           details: { reason: 'NO_CAPACITY', seatsLeft: Math.max(0, left) },
         });
       }
+      // Tope de bloqueos vigentes por salida: cuenta dentro del candado, así que no se sobrepasa.
+      const cap = await this.settings.getNumber('maxActiveHoldsPerDeparture');
+      const active = await tx.hold.findMany({
+        where: {
+          departureId,
+          releasedAt: null,
+          expiresAt: { gt: now },
+          booking: { is: null },
+        },
+        select: { expiresAt: true },
+        orderBy: { expiresAt: 'asc' },
+      });
+      if (active.length >= cap) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((active[0].expiresAt.getTime() - now.getTime()) / 1000),
+        );
+        throw new HttpException(
+          {
+            message: 'Too many seat holds are active for this departure',
+            details: { reason: 'TOO_MANY_HOLDS', retryAfterSeconds },
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
       const hold = await tx.hold.create({
         data: {
           token: generateToken(24),

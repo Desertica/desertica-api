@@ -1,5 +1,6 @@
 import {
   Controller,
+  ForbiddenException,
   Get,
   HttpCode,
   Post,
@@ -11,6 +12,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
+import { parseOrigins } from '../../common/configure-app';
 import { rateLimit } from '../../common/throttle';
 import { EnvVars } from '../../config/env.validation';
 import { AuthService, IssuedSession, Session } from './auth.service';
@@ -33,6 +35,23 @@ export class AuthController {
 
   private get secure(): boolean {
     return this.config.get('REFRESH_COOKIE_SECURE', { infer: true });
+  }
+
+  /**
+   * Defensa extra para los endpoints que viven de la cookie: `SameSite=Strict` deja pasar
+   * a los subdominios del mismo sitio, así que un navegador que declare otro origen que
+   * los de `CORS_ORIGINS` no puede rotar ni cerrar la sesión. Sin `Origin` (no es un
+   * navegador entre sitios) se sigue: sin la cookie no hay nada que hacer.
+   */
+  private assertTrustedOrigin(req: Request): void {
+    const origin = req.headers.origin;
+    if (!origin) return;
+    const allowed = parseOrigins(
+      this.config.get('CORS_ORIGINS', { infer: true }),
+    );
+    if (!allowed.includes(origin)) {
+      throw new ForbiddenException('Origin not allowed');
+    }
   }
 
   private withCookie(res: Response, issued: IssuedSession): Session {
@@ -69,6 +88,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<Session> {
+    this.assertTrustedOrigin(req);
     const token = readCookie(req, REFRESH_COOKIE);
     if (!token) throw new UnauthorizedException('Missing refresh cookie');
     try {
@@ -89,6 +109,7 @@ export class AuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
+    this.assertTrustedOrigin(req);
     const token = readCookie(req, REFRESH_COOKIE);
     if (token) await this.auth.logout(token);
     clearRefreshCookie(res, this.secure);

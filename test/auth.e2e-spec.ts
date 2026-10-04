@@ -253,6 +253,27 @@ describe('Auth y permisos (e2e)', () => {
       await http().post('/api/auth/logout').expect(204);
     });
 
+    it('refuses to rotate or close the session when the browser declares another origin', async () => {
+      const session = await loginAs(app, 'operator');
+      const evil = 'https://evil.desertica.pe';
+      await http()
+        .post('/api/auth/refresh')
+        .set('Origin', evil)
+        .set(refreshCookie(session.refreshToken))
+        .expect(403);
+      await http()
+        .post('/api/auth/logout')
+        .set('Origin', evil)
+        .set(refreshCookie(session.refreshToken))
+        .expect(403);
+      // La cookie sigue vigente: no se rotó ni se revocó.
+      await http()
+        .post('/api/auth/refresh')
+        .set('Origin', 'http://localhost:4300')
+        .set(refreshCookie(session.refreshToken))
+        .expect(200);
+    });
+
     it('allows credentialed CORS only from configured origins', async () => {
       const allowed = await http()
         .options('/api/auth/refresh')
