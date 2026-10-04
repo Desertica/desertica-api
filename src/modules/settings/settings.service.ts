@@ -14,6 +14,10 @@ export const SETTING_DEFINITIONS = {
   complaintDueDays: { default: 15, min: 1, max: 60 },
 } as const;
 
+const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+const MAX_KEYS_PER_SAVE = 50;
+const MAX_STRING = 2000;
+
 export type SettingKey = keyof typeof SETTING_DEFINITIONS;
 export type Settings = Record<SettingKey, number>;
 
@@ -44,7 +48,29 @@ export class SettingsService {
     audit?: { actorUserId: string; ip?: string },
   ) {
     const before = audit ? await this.getAll() : null;
-    for (const [key, value] of Object.entries(input)) {
+    const entries = Object.entries(input);
+    if (entries.length > MAX_KEYS_PER_SAVE) {
+      throw new UnprocessableEntityException(
+        `At most ${MAX_KEYS_PER_SAVE} settings per request`,
+      );
+    }
+    for (const [key, value] of entries) {
+      // Las claves extra son valores planos: nada de objetos anidados ni textos enormes.
+      if (!KEY_PATTERN.test(key)) {
+        throw new UnprocessableEntityException(`Invalid setting key "${key}"`);
+      }
+      const plain =
+        value === null ||
+        typeof value === 'boolean' ||
+        typeof value === 'number' ||
+        (typeof value === 'string' && value.length <= MAX_STRING);
+      if (!plain) {
+        throw new UnprocessableEntityException(
+          `${key} must be a number, boolean, null or a string of up to ${MAX_STRING} characters`,
+        );
+      }
+    }
+    for (const [key, value] of entries) {
       const def = (
         SETTING_DEFINITIONS as Record<
           string,

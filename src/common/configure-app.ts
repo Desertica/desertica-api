@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { EnvVars } from '../config/env.validation';
 import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { PrismaExceptionFilter } from './filters/prisma-exception.filter';
+import { requestContext } from './request-context';
 
 export function parseOrigins(raw: string): string[] {
   return raw
@@ -39,10 +40,14 @@ export function configureApp(app: INestApplication): void {
   http.disable('x-powered-by');
 
   app.use(helmet());
+  app.use(requestContext);
   app.enableCors({
+    // Credenciales (cookie del refresh) solo para la lista explícita; nunca `*`.
     origin: parseOrigins(config.get('CORS_ORIGINS', { infer: true })),
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
+      'Accept-Language',
       'Authorization',
       'Content-Type',
       'Idempotency-Key',
