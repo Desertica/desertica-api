@@ -85,6 +85,15 @@ Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payment
 - **Pago tardío**: un pago confirmado sobre una reserva vencida por falta de pago (`payment_timeout`) la reactiva si la salida sigue abierta y hay cupo; si no, o si una persona la canceló, se crea un `Refund` automático y se avisa al staff. Un pago de más (dos cobros simultáneos) reembolsa el excedente.
 - **Webhooks a registrar**: ver "Pasos manuales" del informe de la Ola 2. Las firmas se validan sobre el cuerpo crudo (`modules/payments/raw-body.ts`).
 
+### Comprobantes
+
+`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local, `DOCUMENT_STORAGE_DIR`, fuera de Git) y sigue el estado hasta que SUNAT resuelve.
+
+- Emisión automática al confirmarse un pago y nota de crédito automática al reembolsar (`Setting.autoIssueDocuments`, por defecto activo). Los pagos manuales los recoge el barrido del worker.
+- Tipo de cambio: `Setting.exchangeRates` (por fecha) → `Setting.exchangeRateUsdPen` → `EXCHANGE_RATE_FALLBACK` (`3.7500`, no es el oficial: el contador define la fuente).
+- El cliente baja el PDF con el enlace firmado de `PublicBooking.documents` (`GET /public/documents/{id}/pdf?exp&sig`, vale una hora).
+- El worker corre cada `DOCUMENT_WORKER_SECONDS` (15) con un candado de Postgres; el certificado digital y la clave SOL no existen en este repo.
+
 ## Prisma 7
 
 El cliente se genera en `src/generated/prisma` (ignorado por git) con `moduleFormat = "cjs"` para alinearlo con NestJS. La URL de conexión vive en `prisma.config.ts`, no en el `datasource` del schema.
