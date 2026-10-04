@@ -1,6 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { buildZip, type ZipEntry } from '../../common/zip/zip';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  DOCUMENT_STORAGE,
+  type DocumentStorage,
+} from '../billing/document-storage';
 
 const json = (value: unknown) =>
   Buffer.from(JSON.stringify(value, null, 2) + '\n', 'utf8');
@@ -16,7 +20,10 @@ const slug = (value: string) =>
  */
 @Injectable()
 export class EvidenceService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(DOCUMENT_STORAGE) private readonly storage: DocumentStorage,
+  ) {}
 
   async build(disputeId: string): Promise<{ filename: string; data: Buffer }> {
     const dispute = await this.prisma.dispute.findUnique({
@@ -221,9 +228,22 @@ export class EvidenceService {
           issuedAt: doc.issuedAt,
           sunatCode: doc.sunatCode,
           hasPdf: doc.pdfKey !== null,
+          hasXml: doc.xmlKey !== null,
         })),
       ),
     );
+    // Los archivos del comprobante (PDF, XML y CDR) que ya están guardados.
+    for (const doc of booking.documents) {
+      const number = `${doc.series.prefix}-${String(doc.number).padStart(8, '0')}`;
+      for (const [key, ext] of [
+        [doc.pdfKey, 'pdf'],
+        [doc.xmlKey, 'xml'],
+        [doc.cdrKey, 'zip'],
+      ] as const) {
+        const data = key ? await this.storage.get(key) : null;
+        if (data) add(`comprobantes/${number}.${ext}`, data);
+      }
+    }
     add('07-auditoria.json', json(audit));
     add(
       'LEEME.txt',

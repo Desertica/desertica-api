@@ -160,3 +160,51 @@ export function readZip(zip: Buffer): Map<string, Buffer> {
   }
   return files;
 }
+
+/**
+ * Empresa activa con series de boleta, factura y notas de crédito. Idempotente:
+ * usa la empresa activa que ya exista (la base de pruebas se comparte) y crea
+ * solo las series que falten.
+ */
+export async function ensureBilling(app: INestApplication<App>) {
+  const prisma = app.get(PrismaService);
+  const company =
+    (await prisma.company.findFirst({
+      where: { active: true },
+      orderBy: { createdAt: 'asc' },
+    })) ??
+    (await prisma.company.create({
+      data: {
+        ruc: `20${Math.floor(Math.random() * 1e9)
+          .toString()
+          .padStart(9, '0')}`,
+        legalName: 'Desertica SAC (pruebas)',
+        fiscalAddress: 'Av. Los Médanos 1, Ica',
+        environment: 'BETA',
+      },
+    }));
+  const wanted = [
+    ['BOLETA', 'B001'],
+    ['FACTURA', 'F001'],
+    ['NOTA_CREDITO', 'BC01'],
+    ['NOTA_CREDITO', 'FC01'],
+  ] as const;
+  for (const [docType, prefix] of wanted) {
+    const exists = await prisma.series.findFirst({
+      where: {
+        companyId: company.id,
+        docType,
+        active: true,
+        prefix: { startsWith: prefix[0] },
+      },
+    });
+    if (!exists) {
+      await prisma.series.upsert({
+        where: { companyId_prefix: { companyId: company.id, prefix } },
+        update: { active: true },
+        create: { companyId: company.id, docType, prefix, nextNumber: 1 },
+      });
+    }
+  }
+  return company;
+}
