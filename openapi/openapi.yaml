@@ -1380,8 +1380,8 @@ paths:
       summary: Reembolsar un pago
       description: |
         Ejecuta la devolución en la pasarela (o la registra si el pago fue manual), actualiza la reserva y
-        emite la nota de crédito si había comprobante. Los montos superiores al tope del operador requieren
-        `payments:refund-any`.
+        emite la nota de crédito si había comprobante. Si lo ya devuelto de la reserva (más lo pendiente) más este
+        monto supera `operatorRefundLimitCents`, hace falta `payments:refund-any` (403 si no se tiene).
       x-permission: payments:refund
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1403,6 +1403,27 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Refund' }
         '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /refunds/{id}/complete:
+    post:
+      operationId: completeRefund
+      tags: [Payments]
+      summary: Confirmar un reembolso manual pendiente
+      description: |
+        Para pagos manuales (efectivo, transferencia, Yape) la cancelación deja el reembolso en `PENDING`: el
+        staff devuelve el dinero por su cuenta y lo confirma aquí. Actualiza `refundedCents` del pago y de la
+        reserva. Los reembolsos de pasarela los ejecuta el API solo y no se confirman a mano.
+      x-permission: payments:refund
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Reembolso confirmado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /refunds:
     get:
@@ -1465,6 +1486,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Dispute' }
+        '404': { $ref: '#/components/responses/Error' }
     patch:
       operationId: updateDispute
       tags: [Payments]
@@ -1485,6 +1507,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Dispute' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /disputes/{id}/evidence:
     get:
       operationId: downloadDisputeEvidence
@@ -1500,6 +1524,7 @@ paths:
           content:
             application/zip:
               schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
 
   # --------------------------------------------------------------- Documents
   /documents:
