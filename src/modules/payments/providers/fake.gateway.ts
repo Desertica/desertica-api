@@ -29,6 +29,8 @@ export class FakeGateway implements PaymentGateway {
   /** Cuántas veces se llamó a `createPayment` (comprueba la idempotencia). */
   createCalls = 0;
   failRefunds = false;
+  /** Código del error cuando `failRefunds` está activo (`unreachable` se reintenta). */
+  refundFailureCode = 'refund_failed';
 
   constructor(readonly provider: 'STRIPE' | 'CULQI') {
     this.currencies = provider === 'STRIPE' ? ['USD'] : ['USD', 'PEN'];
@@ -107,7 +109,7 @@ export class FakeGateway implements PaymentGateway {
   refund(input: RefundInput): Promise<GatewayRefund> {
     if (this.failRefunds) {
       return Promise.reject(
-        new GatewayError('Refund refused', 'refund_failed'),
+        new GatewayError('Refund refused', this.refundFailureCode),
       );
     }
     const refund: GatewayRefund = {

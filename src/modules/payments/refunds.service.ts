@@ -163,11 +163,15 @@ export class RefundsExecutor {
         )
         .then(async (outcome) => {
           if (outcome === 'failed') {
-            await this.alerts.alert('refund_failed', {
-              refundId,
-              paymentId: head.paymentId,
-              amountCents: head.amountCents,
-            });
+            await this.alerts.alert(
+              'refund_failed',
+              {
+                refundId,
+                paymentId: head.paymentId,
+                amountCents: head.amountCents,
+              },
+              { bookingId: head.payment.bookingId },
+            );
           }
           return outcome;
         });

@@ -8,6 +8,8 @@ import { BookingPaymentsService } from '../bookings/booking-payments.service';
 import { SeatsService } from '../catalog/seats.service';
 import { GatewayRegistry } from './gateway.registry';
 import type { GatewayEvent, GatewayPayment } from './providers/payment-gateway';
+import { DisputesService } from './disputes.service';
+import { RefundsService } from './refunds-admin.service';
 import { RefundsExecutor } from './refunds.service';
 import { StaffAlertsService } from './staff-alerts.service';
 
@@ -48,6 +50,8 @@ export class PaymentEventsService {
     private readonly audit: AuditService,
     private readonly alerts: StaffAlertsService,
     private readonly refunds: RefundsExecutor,
+    private readonly refundEvents: RefundsService,
+    private readonly disputes: DisputesService,
   ) {}
 
   /** Punto de entrada del webhook: valida la firma y procesa. */
@@ -133,7 +137,12 @@ export class PaymentEventsService {
     if (event.kind === 'payment') {
       await this.applyPayment(tx, provider, event.payment, fx);
     }
-    // Reembolsos y disputas: ver `RefundEventsService` y `DisputesService` (B2).
+    if (event.kind === 'refund') {
+      await this.refundEvents.applyEvent(tx, provider, event.refund, fx);
+    }
+    if (event.kind === 'dispute') {
+      await this.disputes.applyEvent(tx, provider, event.dispute, fx);
+    }
   }
 
   // ------------------------------------------------------------- Pagos
@@ -170,6 +179,9 @@ export class PaymentEventsService {
     }
     fx.paymentId = found.id;
     let payment = found;
+    if (gw.disputed) {
+      await this.disputes.ensureOpen(tx, found, provider, fx);
+    }
     if (!payment.providerRef && gw.providerRef) {
       payment = await tx.payment.update({
         where: { id: payment.id },
