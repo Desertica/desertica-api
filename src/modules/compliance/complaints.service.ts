@@ -17,6 +17,7 @@ import { addBusinessDays } from '../../common/time/lima';
 import { EnvVars } from '../../config/env.validation';
 import { Complaint, Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { BlockedIdentitiesService } from '../admin/blocked-identities.service';
 import { AuditService } from '../audit/audit.service';
 import {
   isValidDocument,
@@ -64,6 +65,7 @@ export class ComplaintsService {
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
     private readonly captcha: CaptchaService,
+    private readonly blocked: BlockedIdentitiesService,
     private readonly notifications: NotificationsService,
     private readonly audit: AuditService,
     private readonly config: ConfigService<EnvVars, true>,
@@ -80,6 +82,7 @@ export class ComplaintsService {
     ctx: { ip?: string },
     now = new Date(),
   ) {
+    await this.blocked.assertAllowed({ email: dto.email, ip: ctx.ip });
     await this.captcha.verify(dto.turnstileToken, ctx.ip);
     if (!isValidDocument(dto.idDocType, dto.idDocNumber)) {
       throw new UnprocessableEntityException(
