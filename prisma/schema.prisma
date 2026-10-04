@@ -1,3 +1,13 @@
+// Modelo de dominio de Desertica.
+//
+// Convenciones
+// - Dinero: enteros en la unidad menor de la moneda (`*Cents`), siempre con IGV incluido.
+//   El comprobante deriva base e IGV desde el total (ver `Document`).
+// - Fechas: instantes en UTC. Las reglas de negocio se evalúan en America/Lima.
+// - Referencias a objetos (XML, CDR, PDF): claves de almacenamiento (`*Key`), nunca el contenido.
+// - Contenido editorial (títulos, textos, medios) vive en el CMS; aquí solo `TourRef` con un
+//   snapshot mínimo. Cambiar este archivo implica actualizar `openapi/openapi.yaml`.
+
 generator client {
   provider     = "prisma-client"
   output       = "../src/generated/prisma"
@@ -8,15 +18,797 @@ datasource db {
   provider = "postgresql"
 }
 
-model Tour {
-  id             String   @id @default(uuid())
-  slug           String   @unique
-  title          String
-  description    String?
-  priceCents     Int
-  currency       String   @default("MXN")
-  durationHours  Int
-  isPublished    Boolean  @default(false)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+// ---------------------------------------------------------------------------
+// Enumeraciones
+// ---------------------------------------------------------------------------
+
+enum Currency {
+  USD
+  PEN
+}
+
+enum IdDocType {
+  DNI
+  CE
+  PASSPORT
+  RUC
+}
+
+enum TourFormat {
+  SHARED
+  PRIVATE
+}
+
+enum PriceUnit {
+  PER_PERSON
+  PER_GROUP
+}
+
+enum DepartureStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+  COMPLETED
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum BookingSource {
+  WEB
+  MANUAL
+}
+
+enum PaymentProvider {
+  STRIPE
+  CULQI
+  MANUAL
+}
+
+enum PaymentMethod {
+  CARD
+  WALLET
+  YAPE
+  CASH
+  TRANSFER
+  OTHER
+}
+
+enum PaymentKind {
+  FULL
+  DEPOSIT
+  BALANCE
+}
+
+enum PaymentStatus {
+  PENDING
+  REQUIRES_ACTION
+  SUCCEEDED
+  FAILED
+  CANCELLED
+  PARTIALLY_REFUNDED
+  REFUNDED
+  DISPUTED
+}
+
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+enum DisputeStatus {
+  OPEN
+  WON
+  LOST
+  CLOSED
+}
+
+enum SunatEnvironment {
+  BETA
+  PRODUCTION
+}
+
+enum DocumentType {
+  BOLETA
+  FACTURA
+  NOTA_CREDITO
+  NOTA_DEBITO
+}
+
+enum DocumentStatus {
+  PENDING
+  ISSUED
+  ACCEPTED
+  REJECTED
+  VOIDED
+  ERROR
+}
+
+enum NotificationChannel {
+  EMAIL
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+}
+
+enum LegalDocumentKind {
+  TERMS
+  PRIVACY
+  CANCELLATION
+  COOKIES
+  CONDUCT
+}
+
+enum WaiverStatus {
+  PENDING
+  SIGNED
+}
+
+enum ComplaintKind {
+  RECLAMO
+  QUEJA
+}
+
+enum ComplaintGoodType {
+  PRODUCT
+  SERVICE
+}
+
+enum ComplaintStatus {
+  OPEN
+  IN_PROGRESS
+  ANSWERED
+}
+
+enum BlockedKind {
+  EMAIL
+  IP
+}
+
+// ---------------------------------------------------------------------------
+// Staff y acceso
+// ---------------------------------------------------------------------------
+
+model Role {
+  id          String   @id @default(uuid())
+  key         String   @unique // "admin" | "operator" | ...
+  name        String
+  /// Permisos como cadenas "recurso:acción" (p. ej. "bookings:refund").
+  permissions String[]
+  users       User[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model User {
+  id            String         @id @default(uuid())
+  email         String         @unique
+  name          String
+  /// Identificador estable de la cuenta de Google (claim `sub`).
+  googleSub     String?        @unique
+  roleId        String
+  role          Role           @relation(fields: [roleId], references: [id])
+  active        Boolean        @default(true)
+  lastLoginAt   DateTime?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  auditLogs     AuditLog[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Clientes
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id          String       @id @default(uuid())
+  email       String
+  firstName   String
+  lastName    String
+  phone       String?
+  country     String? // ISO 3166-1 alfa-2
+  idDocType   IdDocType?
+  idDocNumber String?
+  locale      String       @default("es")
+  bookings    Booking[]
+  acceptances Acceptance[]
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([email])
+  @@index([idDocType, idDocNumber])
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo operativo (el contenido editorial vive en el CMS)
+// ---------------------------------------------------------------------------
+
+model CancellationPolicy {
+  id                String    @id @default(uuid())
+  key               String
+  name              String
+  version           Int       @default(1)
+  /// Tramos ordenados: [{ "hoursBefore": 48, "refundPercent": 100 }, ...].
+  tiers             Json
+  depositRefundable Boolean   @default(false)
+  active            Boolean   @default(true)
+  tours             TourRef[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([key, version])
+}
+
+model TourRef {
+  id                   String              @id @default(uuid())
+  /// Slug del tour en el CMS; es la clave de unión.
+  slug                 String              @unique
+  /// Snapshot del título (en) para listados del backoffice; se refresca al sincronizar.
+  title                String
+  durationHours        Int?
+  active               Boolean             @default(true)
+  requiresWaiver       Boolean             @default(true)
+  minAge               Int?
+  minHeightCm          Int?
+  defaultCapacity      Int?
+  cancellationPolicyId String?
+  cancellationPolicy   CancellationPolicy? @relation(fields: [cancellationPolicyId], references: [id])
+  cmsSyncedAt          DateTime?
+  departures           Departure[]
+  priceRules           PriceRule[]
+  blackouts            Blackout[]
+  waivers              Waiver[]
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+}
+
+model Departure {
+  id            String          @id @default(uuid())
+  tourRefId     String
+  tourRef       TourRef         @relation(fields: [tourRefId], references: [id])
+  startsAt      DateTime
+  capacity      Int
+  format        TourFormat      @default(SHARED)
+  language      String          @default("es")
+  status        DepartureStatus @default(OPEN)
+  meetingPoint  String?
+  guideName     String?
+  vehicleNote   String?
+  notes         String?
+  /// Cierre de venta antes de la salida, en minutos (0 = hasta la hora de salida).
+  cutoffMinutes Int             @default(0)
+  bookings      Booking[]
+  holds         Hold[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([tourRefId, startsAt, format, language])
+  @@index([startsAt])
+  @@index([tourRefId, startsAt])
+}
+
+model PriceRule {
+  id         String     @id @default(uuid())
+  tourRefId  String
+  tourRef    TourRef    @relation(fields: [tourRefId], references: [id])
+  currency   Currency
+  format     TourFormat @default(SHARED)
+  unit       PriceUnit  @default(PER_PERSON)
+  /// Precio final con IGV incluido.
+  adultCents Int
+  childCents Int?
+  groupCents Int?
+  minPeople  Int?
+  maxPeople  Int?
+  validFrom  DateTime?  @db.Date
+  validTo    DateTime?  @db.Date
+  /// Mayor prioridad gana cuando varias reglas aplican.
+  priority   Int        @default(0)
+  active     Boolean    @default(true)
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([tourRefId, currency, format])
+}
+
+model Blackout {
+  id        String   @id @default(uuid())
+  /// Nulo = aplica a todos los tours.
+  tourRefId String?
+  tourRef   TourRef? @relation(fields: [tourRefId], references: [id])
+  startsOn  DateTime @db.Date
+  endsOn    DateTime @db.Date
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([startsOn, endsOn])
+}
+
+// ---------------------------------------------------------------------------
+// Reservas
+// ---------------------------------------------------------------------------
+
+model Hold {
+  id          String    @id @default(uuid())
+  token       String    @unique
+  departureId String
+  departure   Departure @relation(fields: [departureId], references: [id])
+  seats       Int
+  expiresAt   DateTime
+  releasedAt  DateTime?
+  booking     Booking?
+  createdAt   DateTime  @default(now())
+
+  @@index([departureId, expiresAt])
+}
+
+model Booking {
+  id                   String               @id @default(uuid())
+  /// Referencia pública corta (p. ej. "DST-7K4Q9M").
+  reference            String               @unique
+  status               BookingStatus        @default(PENDING_PAYMENT)
+  source               BookingSource        @default(WEB)
+  departureId          String
+  departure            Departure            @relation(fields: [departureId], references: [id])
+  customerId           String
+  customer             Customer             @relation(fields: [customerId], references: [id])
+  holdId               String?              @unique
+  hold                 Hold?                @relation(fields: [holdId], references: [id])
+  currency             Currency
+  adults               Int
+  children             Int                  @default(0)
+  /// Total a pagar con IGV incluido, tras aplicar la regla de precio.
+  totalCents           Int
+  /// Monto del depósito cuando se eligió pagar en dos partes.
+  depositCents         Int?
+  paidCents            Int                  @default(0)
+  refundedCents        Int                  @default(0)
+  /// Regla de precio y desglose usados al reservar (no cambia si cambian las reglas).
+  priceSnapshot        Json
+  cancellationSnapshot Json
+  locale               String               @default("es")
+  notes                String?
+  /// Datos de facturación pedidos al cliente (tipo de comprobante y receptor).
+  billing              Json
+  /// UTM, gclid, fbclid y landing de la primera visita.
+  attribution          Json?
+  createdByUserId      String?
+  cancelledAt          DateTime?
+  cancelReason         String?
+  passengers           Passenger[]
+  payments             Payment[]
+  paymentLinks         PaymentLink[]
+  documents            Document[]
+  waivers              Waiver[]
+  acceptances          Acceptance[]
+  notifications        Notification[]
+  accessTokens         BookingAccessToken[]
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  @@index([departureId, status])
+  @@index([customerId])
+  @@index([status, createdAt])
+}
+
+/// Acceso del cliente a "mi reserva". Solo se guarda el hash del token.
+model BookingAccessToken {
+  id         String    @id @default(uuid())
+  bookingId  String
+  booking    Booking   @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([bookingId])
+}
+
+model Passenger {
+  id                    String     @id @default(uuid())
+  bookingId             String
+  booking               Booking    @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  firstName             String
+  lastName              String
+  idDocType             IdDocType?
+  idDocNumber           String?
+  birthDate             DateTime?  @db.Date
+  nationality           String?
+  emergencyContactName  String?
+  emergencyContactPhone String?
+  waivers               Waiver[]
+
+  @@index([bookingId])
+}
+
+// ---------------------------------------------------------------------------
+// Pagos
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id               String          @id @default(uuid())
+  bookingId        String
+  booking          Booking         @relation(fields: [bookingId], references: [id])
+  provider         PaymentProvider
+  method           PaymentMethod
+  kind             PaymentKind
+  status           PaymentStatus   @default(PENDING)
+  currency         Currency
+  amountCents      Int
+  refundedCents    Int             @default(0)
+  /// Id del intent/charge en la pasarela; nulo para pagos manuales.
+  providerRef      String?
+  providerPayload  Json?
+  failureCode      String?
+  /// Pago registrado a mano (efectivo, transferencia, Yape personal).
+  recordedByUserId String?
+  paidAt           DateTime?
+  refunds          Refund[]
+  disputes         Dispute[]
+  documents        Document[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+
+  @@unique([provider, providerRef])
+  @@index([bookingId])
+  @@index([status, createdAt])
+}
+
+model PaymentLink {
+  id              String      @id @default(uuid())
+  token           String      @unique
+  bookingId       String
+  booking         Booking     @relation(fields: [bookingId], references: [id])
+  kind            PaymentKind
+  currency        Currency
+  amountCents     Int
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdByUserId String?
+  createdAt       DateTime    @default(now())
+
+  @@index([bookingId])
+}
+
+model Refund {
+  id                String       @id @default(uuid())
+  paymentId         String
+  payment           Payment      @relation(fields: [paymentId], references: [id])
+  amountCents       Int
+  reason            String
+  status            RefundStatus @default(PENDING)
+  providerRef       String?
+  /// Tramo de la política aplicado al calcular el monto.
+  policyTier        Json?
+  requestedByUserId String?
+  approvedByUserId  String?
+  creditNote        Document?    @relation("RefundCreditNote", fields: [creditNoteId], references: [id])
+  creditNoteId      String?      @unique
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@index([paymentId])
+}
+
+model Dispute {
+  id            String          @id @default(uuid())
+  paymentId     String
+  payment       Payment         @relation(fields: [paymentId], references: [id])
+  provider      PaymentProvider
+  providerRef   String
+  status        DisputeStatus   @default(OPEN)
+  reason        String?
+  amountCents   Int
+  currency      Currency
+  evidenceDueAt DateTime?
+  notes         String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([provider, providerRef])
+  @@index([paymentId])
+}
+
+/// Eventos entrantes de las pasarelas; garantiza idempotencia por `(provider, eventId)`.
+model WebhookEvent {
+  id          String          @id @default(uuid())
+  provider    PaymentProvider
+  eventId     String
+  type        String
+  payload     Json
+  receivedAt  DateTime        @default(now())
+  processedAt DateTime?
+  error       String?
+
+  @@unique([provider, eventId])
+}
+
+// ---------------------------------------------------------------------------
+// Facturación electrónica (la emisión la hace desertica-billing)
+// ---------------------------------------------------------------------------
+
+model Company {
+  id            String           @id @default(uuid())
+  ruc           String           @unique
+  legalName     String
+  tradeName     String?
+  fiscalAddress String
+  ubigeo        String?
+  /// Tasa de IGV (0.18 = 18 %).
+  igvRate       Decimal          @default(0.18) @db.Decimal(5, 4)
+  environment   SunatEnvironment @default(BETA)
+  active        Boolean          @default(true)
+  series        Series[]
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+}
+
+model Series {
+  id         String       @id @default(uuid())
+  companyId  String
+  company    Company      @relation(fields: [companyId], references: [id])
+  docType    DocumentType
+  /// Prefijo de la serie, p. ej. "B001", "F001".
+  prefix     String
+  nextNumber Int          @default(1)
+  active     Boolean      @default(true)
+  documents  Document[]
+
+  @@unique([companyId, prefix])
+}
+
+model Document {
+  id                String         @id @default(uuid())
+  bookingId         String
+  booking           Booking        @relation(fields: [bookingId], references: [id])
+  paymentId         String?
+  payment           Payment?       @relation(fields: [paymentId], references: [id])
+  seriesId          String
+  series            Series         @relation(fields: [seriesId], references: [id])
+  number            Int
+  docType           DocumentType
+  status            DocumentStatus @default(PENDING)
+  currency          Currency
+  /// Total con IGV; base e IGV se calculan desde él con la tasa de `Company`.
+  totalCents        Int
+  taxableCents      Int
+  igvCents          Int
+  /// Tipo de cambio SUNAT cuando el comprobante es en USD.
+  exchangeRate      Decimal?       @db.Decimal(10, 4)
+  customerSnapshot  Json
+  xmlKey            String?
+  cdrKey            String?
+  pdfKey            String?
+  sunatCode         String?
+  sunatMessage      String?
+  /// Para notas de crédito y débito: comprobante que modifican.
+  relatedDocumentId String?
+  relatedDocument   Document?      @relation("DocumentRelation", fields: [relatedDocumentId], references: [id])
+  relatedBy         Document[]     @relation("DocumentRelation")
+  refundCreditNote  Refund?        @relation("RefundCreditNote")
+  issuedAt          DateTime?
+  voidedAt          DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@unique([seriesId, number])
+  @@index([bookingId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Comunicaciones
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String              @id @default(uuid())
+  bookingId String?
+  booking   Booking?            @relation(fields: [bookingId], references: [id])
+  channel   NotificationChannel
+  template  String
+  toAddress String
+  status    NotificationStatus  @default(QUEUED)
+  error     String?
+  sentAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  @@index([bookingId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Legal y cumplimiento
+// ---------------------------------------------------------------------------
+
+model LegalDocument {
+  id           String            @id @default(uuid())
+  kind         LegalDocumentKind
+  locale       String
+  version      Int
+  /// Slug de la página en el CMS de donde se tomó el texto.
+  cmsSlug      String
+  /// Título de la página al momento de publicar.
+  title        String
+  /// Texto (Markdown) tal como estaba en el CMS al publicar. Inmutable: es la
+  /// evidencia de lo que aceptó el cliente (un trigger impide modificarlo).
+  textSnapshot String
+  /// SHA-256 (hex) de `title` + `textSnapshot`.
+  contentHash  String
+  publishedAt  DateTime
+  acceptances  Acceptance[]
+
+  @@unique([kind, locale, version])
+}
+
+model Acceptance {
+  id              String        @id @default(uuid())
+  legalDocumentId String
+  legalDocument   LegalDocument @relation(fields: [legalDocumentId], references: [id])
+  bookingId       String?
+  booking         Booking?      @relation(fields: [bookingId], references: [id])
+  customerId      String?
+  customer        Customer?     @relation(fields: [customerId], references: [id])
+  acceptedAt      DateTime      @default(now())
+  ip              String?
+  userAgent       String?
+
+  @@index([bookingId])
+}
+
+model Waiver {
+  id              String       @id @default(uuid())
+  token           String       @unique
+  bookingId       String
+  booking         Booking      @relation(fields: [bookingId], references: [id])
+  passengerId     String?
+  passenger       Passenger?   @relation(fields: [passengerId], references: [id])
+  tourRefId       String
+  tourRef         TourRef      @relation(fields: [tourRefId], references: [id])
+  version         Int
+  status          WaiverStatus @default(PENDING)
+  signerName      String?
+  signerDocType   IdDocType?
+  signerDocNumber String?
+  /// Responsable que firma por un menor.
+  onBehalfOfMinor Boolean      @default(false)
+  medicalNotes    String?
+  signedAt        DateTime?
+  ip              String?
+  pdfKey          String?
+  createdAt       DateTime     @default(now())
+
+  @@index([bookingId])
+}
+
+/// Libro de Reclamaciones virtual.
+model Complaint {
+  id           Int               @id @default(autoincrement())
+  kind         ComplaintKind
+  goodType     ComplaintGoodType
+  consumerName String
+  idDocType    IdDocType
+  idDocNumber  String
+  address      String
+  email        String
+  phone        String?
+  isMinor      Boolean           @default(false)
+  bookingRef   String?
+  amountCents  Int?
+  currency     Currency?
+  description  String
+  detail       String
+  request      String
+  status       ComplaintStatus   @default(OPEN)
+  answer       String?
+  answeredAt   DateTime?
+  /// Plazo legal de respuesta.
+  dueAt        DateTime
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([status, dueAt])
+}
+
+/// Mensajes del formulario de contacto del sitio.
+model ContactMessage {
+  id        String   @id @default(uuid())
+  name      String
+  email     String
+  whatsapp  String?
+  country   String?
+  message   String
+  locale    String?
+  ip        String?
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([handled, createdAt])
+}
+
+/// Consentimiento de cookies por visitante.
+model ConsentRecord {
+  id            String   @id @default(uuid())
+  anonymousId   String
+  /// { "analytics": true, "marketing": false, ... }
+  categories    Json
+  policyVersion Int
+  ip            String?
+  createdAt     DateTime @default(now())
+
+  @@index([anonymousId])
+}
+
+// ---------------------------------------------------------------------------
+// Operación y seguridad
+// ---------------------------------------------------------------------------
+
+/// Registro de solo inserción de cambios de estado y de dinero.
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?
+  actor       User?    @relation(fields: [actorUserId], references: [id])
+  action      String
+  entity      String
+  entityId    String
+  before      Json?
+  after       Json?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
+
+/// Respuestas guardadas de POST con `Idempotency-Key`; repetir la clave devuelve la original.
+model IdempotencyRecord {
+  id          String   @id @default(uuid())
+  /// Operación y, si la hay, el actor (p. ej. `createPublicBooking`, `createManualBooking:<userId>`).
+  scope       String
+  key         String
+  /// SHA-256 del cuerpo canónico: la misma clave con otro cuerpo es un error.
+  requestHash String
+  status      Int
+  body        Json?
+  createdAt   DateTime @default(now())
+
+  @@unique([scope, key])
+  @@index([createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model BlockedIdentity {
+  id        String      @id @default(uuid())
+  kind      BlockedKind
+  value     String
+  reason    String?
+  createdAt DateTime    @default(now())
+
+  @@unique([kind, value])
 }

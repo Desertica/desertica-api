@@ -1,0 +1,298 @@
+openapi: 3.1.0
+info:
+  title: Desertica Billing (interno)
+  version: 0.1.0
+  summary: Contrato del servicio de facturación electrónica (PHP + Greenter) que consume `desertica-api`.
+  description: |
+    Servicio interno, sin puerto público. Solo `desertica-api` lo llama, con un token de servicio
+    (`Authorization: Bearer <service-token>`).
+
+    ## Responsabilidades
+    - **El API es dueño de series y correlativos** (`Series.nextNumber`) y de la persistencia de los
+      archivos. El servicio recibe `series` y `number` ya asignados y no lleva contadores propios.
+    - **El servicio es dueño del certificado digital, de las credenciales SOL y de la comunicación con
+      SUNAT** (o con un OSE). Esos secretos nunca viajan por este contrato ni por el API.
+    - Las emisiones son **idempotentes por `externalId`** (id del `Document` en el API): repetir la
+      misma petición devuelve el resultado ya obtenido; la misma clave con otro contenido es `409`.
+
+    ## Montos
+    Enteros en la unidad menor, con IGV incluido (`totalCents`). El servicio calcula base imponible e IGV
+    con `igvRate` y devuelve ambos; el API los guarda en `Document`.
+
+    ## Pendiente de confirmar al implementar (spike con Greenter contra SUNAT beta)
+    - Si las boletas se envían una a una o por resumen diario (`submission`).
+    - Códigos de catálogo para el motivo de la nota de crédito y para el tipo de afectación del IGV.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: http://desertica-billing:8080
+security:
+  - serviceToken: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Liveness
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  environment: { type: string, enum: [BETA, PRODUCTION] }
+  /v1/documents:
+    post:
+      operationId: emitDocument
+      summary: Emitir una boleta, factura o nota de crédito
+      description: |
+        Genera el XML UBL, lo firma, lo envía a SUNAT y lee el CDR. Para `NOTA_CREDITO` y `NOTA_DEBITO`
+        es obligatorio `affectedDocument` y `reasonCode`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmitDocumentRequest' }
+      responses:
+        '200':
+          description: Resultado de la emisión (también cuando ya estaba emitido)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmitDocumentResult' }
+        '409':
+          description: Misma `externalId` con otro contenido, o serie y número ya usados
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422':
+          description: Datos inválidos para SUNAT
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          description: SUNAT u OSE no disponible; el API reintenta con la misma `externalId`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/documents/{externalId}:
+    get:
+      operationId: getDocument
+      summary: Consultar el estado de un comprobante
+      parameters:
+        - $ref: '#/components/parameters/ExternalId'
+      responses:
+        '200':
+          description: Estado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EmitDocumentResult' }
+        '404':
+          description: Desconocido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/documents/{externalId}/files/{kind}:
+    get:
+      operationId: downloadDocumentFile
+      summary: Descargar el XML firmado, el CDR o el PDF
+      description: El API los descarga y los guarda en el almacenamiento de objetos con retención legal.
+      parameters:
+        - $ref: '#/components/parameters/ExternalId'
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [xml, cdr, pdf] }
+      responses:
+        '200':
+          description: Archivo
+          content:
+            application/xml:
+              schema: { type: string }
+            application/zip:
+              schema: { type: string, format: binary }
+            application/pdf:
+              schema: { type: string, format: binary }
+        '404':
+          description: No existe todavía
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/documents/{externalId}/void:
+    post:
+      operationId: voidDocument
+      summary: Anular un comprobante (comunicación de baja)
+      parameters:
+        - $ref: '#/components/parameters/ExternalId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, voidDate]
+              properties:
+                reason: { type: string, maxLength: 100 }
+                voidDate: { type: string, format: date }
+      responses:
+        '200':
+          description: Ticket de la baja
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketResult' }
+        '404':
+          description: Desconocido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: El comprobante no se puede anular
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/summaries/daily:
+    post:
+      operationId: sendDailySummary
+      summary: Enviar el resumen diario de boletas de una fecha
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [date]
+              properties:
+                date: { type: string, format: date }
+      responses:
+        '200':
+          description: Ticket del resumen
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketResult' }
+  /v1/tickets/{ticket}:
+    get:
+      operationId: getTicket
+      summary: Consultar un ticket de SUNAT (baja o resumen)
+      parameters:
+        - name: ticket
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Estado del ticket
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketResult' }
+        '404':
+          description: Desconocido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+  securitySchemes:
+    serviceToken:
+      type: http
+      scheme: bearer
+  parameters:
+    ExternalId:
+      name: externalId
+      in: path
+      required: true
+      description: Id del `Document` en el API.
+      schema: { type: string, format: uuid }
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: SUNAT_REJECTED }
+        message: { type: string }
+        sunatCode: { type: string }
+        retryable: { type: boolean }
+    Customer:
+      type: object
+      required: [idDocType, idDocNumber, name]
+      properties:
+        idDocType: { type: string, enum: [DNI, CE, PASSPORT, RUC] }
+        idDocNumber: { type: string }
+        name: { type: string }
+        address: { type: string }
+        email: { type: string, format: email }
+    Item:
+      type: object
+      required: [description, quantity, unitPriceCents, totalCents]
+      properties:
+        description: { type: string }
+        quantity: { type: integer, minimum: 1 }
+        unitPriceCents: { type: integer, description: Con IGV incluido. }
+        totalCents: { type: integer, description: Con IGV incluido. }
+    AffectedDocument:
+      type: object
+      required: [docType, series, number]
+      properties:
+        docType: { type: string, enum: [BOLETA, FACTURA] }
+        series: { type: string }
+        number: { type: integer }
+    EmitDocumentRequest:
+      type: object
+      required: [externalId, docType, series, number, issueDate, currency, igvRate, customer, items, totalCents]
+      properties:
+        externalId: { type: string, format: uuid }
+        docType: { type: string, enum: [BOLETA, FACTURA, NOTA_CREDITO, NOTA_DEBITO] }
+        series: { type: string, example: B001 }
+        number: { type: integer, minimum: 1 }
+        issueDate: { type: string, format: date, description: Fecha de emisión en America/Lima. }
+        currency: { type: string, enum: [USD, PEN] }
+        exchangeRate:
+          type: string
+          description: Tipo de cambio SUNAT; obligatorio si la moneda es USD.
+          example: '3.7500'
+        igvRate: { type: string, example: '0.1800' }
+        customer: { $ref: '#/components/schemas/Customer' }
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/Item' }
+        totalCents: { type: integer, description: Debe coincidir con la suma de los ítems. }
+        submission:
+          type: string
+          enum: [IMMEDIATE, DAILY_SUMMARY]
+          description: Cómo se envía a SUNAT; por defecto lo decide la configuración del servicio.
+        affectedDocument: { $ref: '#/components/schemas/AffectedDocument' }
+        reasonCode:
+          type: string
+          description: Código de catálogo SUNAT del motivo (notas de crédito y débito).
+        reason: { type: string, description: Texto libre del motivo. }
+        notes: { type: string }
+    EmitDocumentResult:
+      type: object
+      required: [externalId, status]
+      properties:
+        externalId: { type: string, format: uuid }
+        status: { type: string, enum: [PENDING, ISSUED, ACCEPTED, REJECTED, VOIDED, ERROR] }
+        taxableCents: { type: integer, description: Base imponible. }
+        igvCents: { type: integer }
+        totalCents: { type: integer }
+        hash: { type: string, description: Hash de la firma del XML. }
+        sunatCode: { type: [string, 'null'] }
+        sunatMessage: { type: [string, 'null'] }
+        ticket: { type: [string, 'null'], description: Ticket si el envío es asíncrono. }
+        files:
+          type: object
+          properties:
+            xml: { type: boolean }
+            cdr: { type: boolean }
+            pdf: { type: boolean }
+    TicketResult:
+      type: object
+      required: [ticket, status]
+      properties:
+        ticket: { type: string }
+        status: { type: string, enum: [PENDING, ACCEPTED, REJECTED, ERROR] }
+        sunatCode: { type: [string, 'null'] }
+        sunatMessage: { type: [string, 'null'] }
