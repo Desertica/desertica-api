@@ -22,6 +22,7 @@ import { ComplianceModule } from './modules/compliance/compliance.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CaptchaModule } from './common/captcha/captcha.module';
+import { QueueModule } from './common/queue/queue.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -71,6 +72,7 @@ import { PrismaModule } from './prisma/prisma.module';
     CatalogModule,
     IdempotencyModule,
     CaptchaModule,
+    QueueModule,
     NotificationsModule,
     ComplianceModule,
     BookingsModule,

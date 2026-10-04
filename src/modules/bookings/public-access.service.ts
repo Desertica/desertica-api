@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { BackgroundQueue } from '../../common/queue/background-queue';
 import {
   KEY_VALUE_STORE,
   type KeyValueStore,
@@ -21,24 +22,31 @@ export class PublicAccessService {
     private readonly access: BookingAccessService,
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService<EnvVars, true>,
+    private readonly queue: BackgroundQueue,
     @Inject(KEY_VALUE_STORE) private readonly store: KeyValueStore,
   ) {}
 
   /**
    * Siempre termina igual (el controlador responde 202) exista o no la
-   * reserva. Además del límite por IP, cada correo puede pedir 3 enlaces por
-   * hora; pasado eso se ignora en silencio para no revelar nada.
+   * reserva, y también en el mismo tiempo: la búsqueda, el token y el correo
+   * van a una cola y la petición solo cuenta el intento. Además del límite
+   * por IP, cada correo puede pedir 3 enlaces por hora; pasado eso se ignora
+   * en silencio para no revelar nada.
    */
   async request(reference: string, rawEmail: string): Promise<void> {
     const email = normalizeEmail(rawEmail);
+    const ref = reference.trim().toUpperCase();
     const hits = await this.store.incr(
-      `access:${sha256(`${email}|${reference.trim().toUpperCase()}`)}`,
+      `access:${sha256(`${email}|${ref}`)}`,
       HOUR,
     );
     if (hits.value > 3) return;
+    this.queue.enqueue('booking_access', () => this.deliver(ref, email));
+  }
 
+  private async deliver(reference: string, email: string): Promise<void> {
     const booking = await this.prisma.booking.findUnique({
-      where: { reference: reference.trim().toUpperCase() },
+      where: { reference },
       include: { customer: true, departure: true },
     });
     if (!booking || normalizeEmail(booking.customer.email) !== email) return;
