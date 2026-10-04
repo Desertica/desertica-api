@@ -1758,6 +1758,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/User' }
+        '409': { $ref: '#/components/responses/Error' }
   /users/{id}:
     patch:
       operationId: updateUser
