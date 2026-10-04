@@ -84,6 +84,24 @@ export const envSchema = Joi.object({
   CMS_URL: Joi.string().uri().default('http://localhost:1337'),
   CMS_API_TOKEN: Joi.string().allow('').default(''),
   CMS_CACHE_TTL_SECONDS: Joi.number().integer().min(0).default(300),
+
+  // Pagos (Ola 2). `fake` solo existe para desarrollo y pruebas: nunca mueve dinero.
+  PAYMENT_GATEWAY_MODE: Joi.string()
+    .valid('live', 'fake')
+    .default('live')
+    .when('NODE_ENV', { is: 'production', then: Joi.valid('live') }),
+  /** Stripe cobra solo USD. Sin claves, sus operaciones responden 503. */
+  STRIPE_SECRET_KEY: Joi.string().allow('').default(''),
+  STRIPE_PUBLISHABLE_KEY: Joi.string().allow('').default(''),
+  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /** Culqi cobra USD o PEN. */
+  CULQI_SECRET_KEY: Joi.string().allow('').default(''),
+  CULQI_PUBLIC_KEY: Joi.string().allow('').default(''),
+  CULQI_API_URL: Joi.string().uri().default('https://api.culqi.com/v2'),
+  /** Secreto compartido del webhook de Culqi (ver `CulqiGateway.parseWebhook`). */
+  CULQI_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /** Cada cuántos segundos se ejecutan los reembolsos pendientes (0 = apagado). */
+  REFUND_SWEEP_SECONDS: Joi.number().integer().min(0).default(60),
 });
 
 export interface EnvVars {
@@ -110,4 +128,13 @@ export interface EnvVars {
   CMS_URL: string;
   CMS_API_TOKEN: string;
   CMS_CACHE_TTL_SECONDS: number;
+  PAYMENT_GATEWAY_MODE: 'live' | 'fake';
+  STRIPE_SECRET_KEY: string;
+  STRIPE_PUBLISHABLE_KEY: string;
+  STRIPE_WEBHOOK_SECRET: string;
+  CULQI_SECRET_KEY: string;
+  CULQI_PUBLIC_KEY: string;
+  CULQI_API_URL: string;
+  CULQI_WEBHOOK_SECRET: string;
+  REFUND_SWEEP_SECONDS: number;
 }

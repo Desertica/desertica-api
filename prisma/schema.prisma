@@ -464,6 +464,9 @@ model Payment {
   failureCode      String?
   /// Pago registrado a mano (efectivo, transferencia, Yape personal).
   recordedByUserId String?
+  /// Enlace de pago desde el que se inició el cobro (se marca usado al confirmarse).
+  paymentLinkId    String?
+  paymentLink      PaymentLink?    @relation(fields: [paymentLinkId], references: [id])
   paidAt           DateTime?
   refunds          Refund[]
   disputes         Dispute[]
@@ -473,6 +476,7 @@ model Payment {
 
   @@unique([provider, providerRef])
   @@index([bookingId])
+  @@index([paymentLinkId])
   @@index([status, createdAt])
 }
 
@@ -487,6 +491,7 @@ model PaymentLink {
   expiresAt       DateTime
   usedAt          DateTime?
   createdByUserId String?
+  payments        Payment[]
   createdAt       DateTime    @default(now())
 
   @@index([bookingId])
