@@ -8,7 +8,7 @@ Contrato entre `desertica-web` (navegador), `desertica-api` (servidor) y Google 
 - Los eventos se emiten solo en el navegador (nunca durante el render en el servidor).
 - **Importes**: unidades mayores con decimales (`123.5`), no centavos, y con IGV incluido, porque así los espera GA4 y Meta. Moneda en `currency` (`USD` o `PEN`).
 - **Ítem**: `item_id` es el slug del tour, `item_name` su título en el idioma de la página, `item_category` el destino y `item_variant` el formato (`SHARED` o `PRIVATE`).
-- **Deduplicación**: cada evento de compra lleva `event_id` (la referencia de la reserva). El API envía el mismo `event_id` por servidor cuando existe consentimiento, para que GA4 y Meta no cuenten dos veces.
+- **Deduplicación**: `begin_checkout` y `add_payment_info` llevan `event_id` igual a la referencia de la reserva. `purchase` lleva `transaction_id` y `event_id` iguales a `<referencia>-<n>`, donde `n` es el orden del pago confirmado de esa reserva (1 el pago total o el depósito, 2 el saldo): así GA4 y Meta no descartan el segundo pago por repetido. El API envía el mismo `event_id` por servidor cuando existe consentimiento, para que no se cuente dos veces.
 - El backoffice no usa analítica de marketing.
 
 ## Eventos
@@ -20,7 +20,7 @@ Contrato entre `desertica-web` (navegador), `desertica-api` (servidor) y Google 
 | `view_item` | `ViewContent` | Detalle de un tour | `currency`, `value`, `items[]` |
 | `begin_checkout` | `InitiateCheckout` | El cliente confirma fecha y personas y crea la reserva | `currency`, `value`, `items[]`, `event_id` |
 | `add_payment_info` | `AddPaymentInfo` | El cliente elige método de pago | `currency`, `value`, `payment_type` (`stripe` o `culqi`), `event_id` |
-| `purchase` | `Purchase` | El pago queda confirmado | `transaction_id` (referencia), `currency`, `value`, `items[]`, `event_id` |
+| `purchase` | `Purchase` | El pago queda confirmado | `transaction_id` (`<referencia>-<n>`), `currency`, `value`, `items[]`, `event_id` (igual a `transaction_id`) |
 | `generate_lead` | `Lead` | Envío del formulario de contacto | `form` (`contact`) |
 | `click_whatsapp` | `Contact` | Clic en un enlace de WhatsApp | `placement` |
 | `cancel_booking` | — | Reserva cancelada desde "mi reserva" | `transaction_id` |
