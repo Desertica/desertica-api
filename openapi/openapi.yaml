@@ -12,9 +12,13 @@ info:
       los clientes. Monedas: `USD` y `PEN`.
     - **Fechas**: ISO 8601 en UTC. Las reglas de negocio (cortes de venta, recordatorios) usan `America/Lima`.
     - **Paginación**: `page` (desde 1) y `pageSize` (máximo 100). Las listas responden `{ data, meta }`.
-    - **Errores**: `{ statusCode, error, message, details? }`.
+    - **Errores**: `{ statusCode, error, message, details? }`. Los errores transversales no se repiten en cada
+      operación: `400` (JSON mal formado), `401`, `403` (con `details.required` = permisos que faltan),
+      `422` (validación de la entrada, incluidos ids mal formados; `message` lista cada campo), `429` y `5xx`.
     - **Idempotencia**: los `POST` que crean reservas y pagos aceptan `Idempotency-Key`; repetir la clave
-      devuelve la respuesta original.
+      devuelve la respuesta original. Reusar la clave con otro cuerpo responde `422`. Una petición simultánea
+      con la misma clave espera a la primera. En `createPublicBooking` la repetición devuelve la misma reserva
+      con un `accessToken` nuevo (el original no se guarda en claro).
     - **Autenticación**: el staff usa `Authorization: Bearer <jwt>` (login con Google). El cliente accede a su
       reserva con `X-Booking-Token`. Los webhooks se validan por firma del proveedor.
     - **Permisos**: cada operación del staff declara `x-permission`. El rol `admin` tiene todos; `operator`
@@ -153,6 +157,7 @@ paths:
                 departureId: { type: string, format: uuid }
                 seats: { type: integer, minimum: 1 }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '201':
           description: Cupo bloqueado
           content:
@@ -654,6 +659,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/UpdateTourRef' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Tour
           content:
@@ -742,6 +748,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/UpdateDeparture' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Salida
           content:
@@ -761,6 +768,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Manifiesto
           content:
@@ -854,6 +862,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/PriceRuleInput' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Regla
           content:
@@ -865,6 +874,7 @@ paths:
       summary: Desactivar una regla de precio
       x-permission: prices:write
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '204': { description: Desactivada }
   /blackouts:
     get:
@@ -909,6 +919,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '204': { description: Eliminada }
   /cancellation-policies:
     get:
@@ -1001,6 +1012,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CreateManualBooking' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '201':
           description: Reserva
           content:
@@ -1033,6 +1045,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/UpdateBooking' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '200':
           description: Reserva
           content:
@@ -1060,6 +1074,7 @@ paths:
                 reason: { type: string }
                 refund: { type: string, enum: [POLICY, FULL, NONE] }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Reserva cancelada
           content:
@@ -1086,6 +1101,7 @@ paths:
                 targetDepartureId: { type: string, format: uuid }
                 reason: { type: string }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Reserva movida
           content:
@@ -1119,6 +1135,8 @@ paths:
               properties:
                 status: { type: string, enum: [COMPLETED, NO_SHOW] }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '200':
           description: Reserva
           content:
@@ -1147,6 +1165,8 @@ paths:
                   description: Opcional; por defecto el monto pendiente de ese tipo.
                 expiresInHours: { type: integer, minimum: 1, maximum: 720, default: 48 }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '201':
           description: Enlace
           content:
@@ -1179,6 +1199,7 @@ paths:
                 reference: { type: string, description: Número de operación o nota. }
                 paidAt: { type: string, format: date-time }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '201':
           description: Pago
           content:
@@ -1565,6 +1586,7 @@ paths:
       summary: Ver un cliente con su historial de reservas
       x-permission: customers:read
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Cliente
           content:
@@ -1581,6 +1603,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CustomerInput' }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Cliente
           content:
@@ -1636,6 +1659,7 @@ paths:
       summary: Ver un reclamo
       x-permission: complaints:read
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Reclamo
           content:
@@ -1663,6 +1687,7 @@ paths:
               properties:
                 answer: { type: string }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Reclamo respondido
           content:
@@ -1698,6 +1723,10 @@ paths:
       operationId: publishLegalDocument
       tags: [Compliance]
       summary: Publicar una nueva versión de un documento legal
+      description: |
+        Trae la página `cmsSlug` del CMS en el idioma `locale` y guarda un snapshot inmutable de su texto
+        (un trigger de la base impide modificarlo o borrarlo). La versión es la siguiente de `(kind, locale)`.
+        Responde 422 si el CMS no tiene esa página y 503 si el CMS no responde.
       x-permission: legal:write
       requestBody:
         required: true
@@ -1778,6 +1807,7 @@ paths:
                 roleId: { type: string, format: uuid }
                 active: { type: boolean }
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Usuario
           content:
@@ -2312,7 +2342,7 @@ components:
         startsAt: { type: string, format: date-time }
         language: { type: string }
         format: { $ref: '#/components/schemas/TourFormat' }
-        seatsLeft: { type: integer }
+        seatsLeft: { type: integer, description: Cupos libres; 0 significa agotada. }
         meetingPoint: { type: [string, 'null'] }
         price:
           type: object
@@ -2493,7 +2523,10 @@ components:
           properties:
             customer: { $ref: '#/components/schemas/Customer' }
             depositCents: { type: [integer, 'null'] }
-            refundedCents: { type: integer }
+            refundedCents: { type: integer, description: Devuelto efectivamente por la pasarela o a mano. }
+            refundDueCents:
+              type: integer
+              description: Reembolsos calculados (cancelación, cambio de precio) que aún no se ejecutaron.
             billing: { $ref: '#/components/schemas/Billing' }
             notes: { type: [string, 'null'] }
             locale: { type: string }
@@ -2743,8 +2776,14 @@ components:
         minHeightCm: { type: [integer, 'null'] }
     LegalDocument:
       type: object
-      required: [id, kind, locale, version, cmsSlug, publishedAt]
+      description: |
+        Versión publicada de un documento legal. Al publicar se guarda un snapshot inmutable del texto
+        traído del CMS (título, Markdown y su hash); es la evidencia de lo que aceptó el cliente. El texto
+        no se devuelve aquí: la web lo muestra desde el CMS y `contentHash` permite comprobar que coincide.
+      required: [id, kind, locale, version, cmsSlug, publishedAt, title, contentHash]
       properties:
+        title: { type: string, description: Título de la página en el CMS al publicar. }
+        contentHash: { type: string, description: SHA-256 (hex) de título y texto del snapshot. }
         id: { type: string, format: uuid }
         kind: { $ref: '#/components/schemas/LegalDocumentKind' }
         locale: { type: string }
