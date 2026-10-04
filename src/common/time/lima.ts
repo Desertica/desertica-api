@@ -59,3 +59,18 @@ export function dbDateToString(value: Date): string {
 export function stringToDbDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
 }
+
+/**
+ * Suma `days` días hábiles (lunes a viernes, según el calendario de Lima) a un
+ * instante, conservando la hora. No conoce feriados: ver `docs/PENDIENTES.md`.
+ */
+export function addBusinessDays(from: Date, days: number): Date {
+  let current = new Date(from);
+  let remaining = days;
+  while (remaining > 0) {
+    current = new Date(current.getTime() + 86_400_000);
+    const weekday = limaWeekday(current);
+    if (weekday !== 0 && weekday !== 6) remaining--;
+  }
+  return current;
+}

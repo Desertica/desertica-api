@@ -10,7 +10,7 @@ export const SETTING_DEFINITIONS = {
   holdMinutes: { default: 15, min: 1, max: 120 },
   /** Tope de reembolso de un operador sin `payments:refund-any`, en centavos. */
   operatorRefundLimitCents: { default: 20000, min: 0, max: 100_000_000 },
-  /** Días de plazo legal para responder un reclamo. */
+  /** Días hábiles de plazo para responder un reclamo (a confirmar con el abogado). */
   complaintDueDays: { default: 15, min: 1, max: 60 },
 } as const;
 

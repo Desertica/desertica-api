@@ -1,21 +1,18 @@
 import { Body, Controller, Get, HttpCode, Post, Req } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { rateLimit } from '../../common/throttle';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import type { AuthUser } from './auth.types';
 import { CurrentUser, Public } from './decorators';
 import { GoogleLoginDto, RefreshTokenDto } from './dto/auth.dto';
 
-/** Límite por IP de los endpoints de sesión; `AUTH_THROTTLE_LIMIT` lo sobreescribe (pruebas). */
-const authLimit = (fallback: number) => () =>
-  Number(process.env.AUTH_THROTTLE_LIMIT ?? fallback);
-
 @Controller('auth')
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
   @Public()
-  @Throttle({ default: { limit: authLimit(10), ttl: 60_000 } })
+  @Throttle(rateLimit(10, 60_000))
   @Post('google')
   @HttpCode(200)
   google(@Body() dto: GoogleLoginDto, @Req() req: Request) {
@@ -23,7 +20,7 @@ export class AuthController {
   }
 
   @Public()
-  @Throttle({ default: { limit: authLimit(30), ttl: 60_000 } })
+  @Throttle(rateLimit(30, 60_000))
   @Post('refresh')
   @HttpCode(200)
   refresh(@Body() dto: RefreshTokenDto, @Req() req: Request) {
