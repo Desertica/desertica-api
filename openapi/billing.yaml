@@ -15,6 +15,10 @@ info:
     - Las emisiones son **idempotentes por `externalId`** (id del `Document` en el API): repetir la
       misma petición devuelve el resultado ya obtenido; la misma clave con otro contenido es `409`.
 
+    ## Datos del emisor
+    RUC, razón social y dirección fiscal salen de las variables `BILLING_ISSUER_*` de este servicio, no del
+    contrato: el servicio es dueño de la identidad fiscal igual que lo es del certificado.
+
     ## Montos
     Enteros en la unidad menor, con IGV incluido (`totalCents`). El servicio calcula base imponible e IGV
     con `igvRate` y devuelve ambos; el API los guarda en `Document`.
@@ -79,6 +83,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '400': { $ref: '#/components/responses/InvalidJson' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/documents/{externalId}:
     get:
       operationId: getDocument
@@ -96,6 +102,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/documents/{externalId}/files/{kind}:
     get:
       operationId: downloadDocumentFile
@@ -122,6 +129,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /v1/documents/{externalId}/void:
     post:
       operationId: voidDocument
@@ -154,10 +162,15 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '400': { $ref: '#/components/responses/InvalidJson' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '502': { $ref: '#/components/responses/Unavailable' }
   /v1/summaries/daily:
     post:
       operationId: sendDailySummary
       summary: Enviar el resumen diario de boletas de una fecha
+      description: Un resumen por moneda. Si no hay boletas pendientes de esa fecha y moneda responde `422 NOTHING_TO_SUMMARIZE`.
       requestBody:
         required: true
         content:
@@ -167,12 +180,20 @@ paths:
               required: [date]
               properties:
                 date: { type: string, format: date }
+                currency:
+                  type: string
+                  enum: [USD, PEN]
+                  description: Greenter genera un resumen por moneda. Sin este campo se atiende la siguiente moneda pendiente (PEN primero); repetir la llamada atiende la otra.
       responses:
         '200':
           description: Ticket del resumen
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TicketResult' }
+        '400': { $ref: '#/components/responses/InvalidJson' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '502': { $ref: '#/components/responses/Unavailable' }
   /v1/tickets/{ticket}:
     get:
       operationId: getTicket
@@ -193,6 +214,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '502': { $ref: '#/components/responses/Unavailable' }
 components:
   securitySchemes:
     serviceToken:
@@ -205,12 +228,50 @@ components:
       required: true
       description: Id del `Document` en el API.
       schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: Falta o es inválido el token de servicio
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InvalidJson:
+      description: El cuerpo no es JSON válido (`INVALID_JSON`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unprocessable:
+      description: Datos inválidos o sin nada que procesar (`VALIDATION_ERROR`, `SUNAT_EXCEPTION`, `NOTHING_TO_SUMMARIZE`)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unavailable:
+      description: SUNAT u OSE no disponible (`SUNAT_UNAVAILABLE`); es reintentable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
   schemas:
     Error:
       type: object
       required: [code, message]
       properties:
-        code: { type: string, example: SUNAT_REJECTED }
+        code:
+          type: string
+          description: |
+            Un CDR rechazado por SUNAT no es un error: responde `200` con `status: REJECTED`.
+          enum:
+            - UNAUTHORIZED
+            - NOT_FOUND
+            - METHOD_NOT_ALLOWED
+            - INVALID_JSON
+            - VALIDATION_ERROR
+            - IDEMPOTENCY_CONFLICT
+            - SERIES_NUMBER_IN_USE
+            - SUNAT_EXCEPTION
+            - SUNAT_UNAVAILABLE
+            - NOT_VOIDABLE
+            - VOID_CONFLICT
+            - NOTHING_TO_SUMMARIZE
+            - INTERNAL_ERROR
         message: { type: string }
         sunatCode: { type: string }
         retryable: { type: boolean }
@@ -274,7 +335,10 @@ components:
       required: [externalId, status]
       properties:
         externalId: { type: string, format: uuid }
-        status: { type: string, enum: [PENDING, ISSUED, ACCEPTED, REJECTED, VOIDED, ERROR] }
+        status:
+          type: string
+          enum: [PENDING, ISSUED, ACCEPTED, REJECTED, VOIDED, ERROR]
+          description: '`ISSUED` se usa para boletas con `submission: DAILY_SUMMARY` hasta que su resumen sea aceptado.'
         taxableCents: { type: integer, description: Base imponible. }
         igvCents: { type: integer }
         totalCents: { type: integer }

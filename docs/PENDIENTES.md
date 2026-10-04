@@ -38,6 +38,9 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 
 - [ ] Tratamiento tributario de depósito y saldo (anticipos), para diseñar `Document`.
 - [ ] Tipo de cambio SUNAT para comprobantes en USD y tope de boletas con identificación del cliente.
+- [ ] Catálogos de SUNAT (motivos de nota de crédito y débito, afectación del IGV): `desertica-billing` los contrastó con una fuente de 2017 y con Greenter porque no pudo leer el Anexo 8 oficial; confirmar.
+- [ ] Unidad de medida de los tours (hoy `NIU`; ¿`ZZ` para servicios?) y si aplica la leyenda 2004 «Agencia de Viaje – Paquete turístico».
+- [ ] Si habrá boletas sin identificar al cliente (hoy el receptor es obligatorio).
 - [ ] Contabilidad (standby): exportación CSV de ventas y pagos, reporte de conciliación con Stripe y Culqi, formato PLE y alerta de vencimiento del certificado.
 
 ## Producto: v2 (después de las primeras ventas)
@@ -48,6 +51,7 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 - [ ] WhatsApp Business API para confirmaciones.
 - [ ] Sincronización con Google Calendar y manifiesto automático para guías; rol Guía.
 - [ ] Cuentas de cliente con magic link, reseñas, búsqueda de DNI/RUC y canal ARCO automatizado.
+- [ ] Cancelación por el cliente desde "mi reserva": endpoint público con reembolso calculado por la política. Hasta entonces cancela el staff, y el evento `cancel_booking` queda sin uso.
 
 ## Producto: opcional (solo con demanda real)
 
@@ -75,7 +79,7 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Comprobantes (Ola 2)**: `issueDocument`, `listDocuments`, `getDocument`, `retryDocument`, `voidDocument`, `createCreditNote`, `downloadDocumentFile`; cliente de `desertica-billing`; `PublicBooking.documents` hoy siempre vacío.
 - [ ] **Pagos y disputas, solo lectura/edición**: `listPayments`, `getPayment`, `listDisputes`, `getDispute`, `updateDispute`, `downloadDisputeEvidence`.
 - [ ] **Administración sin asignar a un hito**: `getCompany`/`saveCompany`, `listSeries`/`createSeries`, `listBlockedIdentities`/`createBlockedIdentity` (y aplicar los bloqueos al reservar), `getDashboardSummary`, `getSalesReport`, `eraseCustomer` (ARCO), `cancelDeparture` (cancelar una salida y reembolsar/reprogramar sus reservas).
-- [ ] **Contrato sin cubrir un caso del web**: el evento `cancel_booking` de `docs/analytics-events.md` supone cancelar desde "mi reserva", pero no hay operación pública para eso. Decidir si se agrega.
+- [x] **Cancelar desde "mi reserva"**: decidido para v2 (ver arriba).
 - [ ] **Mensajes de contacto**: se guardan en `ContactMessage` y avisan a `STAFF_NOTIFY_EMAIL`, pero el contrato no tiene operación para listarlos ni marcarlos atendidos.
 - [ ] **Correo real**: hoy `LogMailer` escribe en el log. Falta el driver (SMTP/API de correo) y las plantillas (`booking_created`, `booking_confirmed`, `booking_cancelled`, `booking_rescheduled`, `booking_expired`, `booking_access`, `payment_link`, `complaint_received`, `complaint_answered`, `complaint_staff_alert`, `contact_message`).
 - [ ] **Rutas de los enlaces de correo**: el API arma `/booking/<ref>?token=`, `/waiver/<token>` y `/pay/<token>` sobre `PUBLIC_WEB_URL` (`modules/bookings/links.ts`). `desertica-web` debe implementarlas o avisar para cambiarlas.

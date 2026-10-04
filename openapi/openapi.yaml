@@ -25,6 +25,21 @@ info:
       tiene los de reservas, calendario, clientes, pagos (reembolsos hasta un tope), comprobantes y reclamos,
       y no tiene `users:*`, `company:*`, `settings:*` ni `documents:void`.
     - **Contenido editorial** (títulos, textos, medios) no pasa por este API: lo sirve el CMS.
+
+    ## Sesión del staff
+    `POST /auth/google` devuelve el token de acceso en el cuerpo y fija el refresh token en la cookie
+    `desertica_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/auth`). El backoffice y el API deben
+    estar en el mismo sitio (subdominios del mismo dominio) y el API acepta CORS con credenciales solo desde
+    los orígenes configurados. El refresh rota en cada uso y reutilizar uno viejo revoca todas las sesiones.
+
+    ## Enlaces de los correos
+    Se arman sobre `PUBLIC_WEB_URL`: acceso a la reserva `/booking/{reference}?token=<accessToken>`,
+    descargo `/waiver/{token}` y enlace de pago `/pay/{token}`. El sitio web debe implementar esas rutas.
+
+    ## IP del cliente
+    El sitio web llama a `/public/*` a través de su servidor y reenvía la IP real en `X-Forwarded-For`. El API
+    solo la confía hasta el número de saltos de `TRUST_PROXY` (2 detrás de Cloudflare y Coolify); sin eso todos
+    los visitantes compartirían un único contador de límite de peticiones.
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
@@ -536,7 +551,9 @@ paths:
                 idToken: { type: string }
       responses:
         '200':
-          description: Sesión
+          description: Sesión. El refresh token viaja solo en la cookie `desertica_refresh`.
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/RefreshCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
@@ -547,19 +564,16 @@ paths:
       operationId: refreshSession
       tags: [Auth]
       summary: Renovar el token de acceso
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refreshToken]
-              properties:
-                refreshToken: { type: string }
+      description: |
+        Lee la cookie `desertica_refresh`, la rota y devuelve un token de acceso nuevo con una cookie nueva.
+        Reutilizar un refresh ya rotado revoca todas las sesiones del usuario.
+      security:
+        - refreshCookie: []
       responses:
         '200':
           description: Sesión renovada
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/RefreshCookie' }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Session' }
@@ -568,18 +582,15 @@ paths:
     post:
       operationId: logout
       tags: [Auth]
-      summary: Cerrar sesión (revoca el refresh token)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [refreshToken]
-              properties:
-                refreshToken: { type: string }
+      summary: Cerrar sesión
+      description: Revoca el refresh token de la cookie `desertica_refresh` y la borra.
+      security:
+        - refreshCookie: []
       responses:
-        '204': { description: Cerrada }
+        '204':
+          description: Cerrada
+          headers:
+            Set-Cookie: { $ref: '#/components/headers/RefreshCookie' }
   /auth/me:
     get:
       operationId: getMe
@@ -985,6 +996,23 @@ paths:
           in: query
           description: Busca por referencia, nombre, correo o documento.
           schema: { type: string }
+        - name: source
+          in: query
+          schema: { type: string, enum: [WEB, MANUAL] }
+        - name: currency
+          in: query
+          schema: { $ref: '#/components/schemas/Currency' }
+        - name: customerId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: paymentStatus
+          in: query
+          description: UNPAID = sin pagos; PARTIAL = pagó algo pero queda saldo; PAID = sin saldo.
+          schema: { type: string, enum: [UNPAID, PARTIAL, PAID] }
+        - name: waiverStatus
+          in: query
+          description: PENDING = al menos un descargo sin firmar.
+          schema: { $ref: '#/components/schemas/WaiverStatus' }
       responses:
         '200':
           description: Reservas
@@ -1052,6 +1080,45 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Booking' }
+  /bookings/quote:
+    post:
+      operationId: createStaffQuote
+      tags: [Bookings]
+      summary: Cotizar una reserva manual
+      description: Igual que la cotización pública, pero admite un precio acordado (`overrideTotalCents`, requiere `bookings:override`).
+      x-permission: bookings:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StaffQuoteRequest' }
+      responses:
+        '200':
+          description: Cotización
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Quote' }
+        '403': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /bookings/{id}/cancellation-quote:
+    get:
+      operationId: getCancellationQuote
+      tags: [Bookings]
+      summary: Ver cuánto se reembolsaría antes de cancelar
+      description: Calcula el reembolso con la política vigente al reservar, sin cambiar nada.
+      x-permission: bookings:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: refund
+          in: query
+          schema: { type: string, enum: [POLICY, FULL, NONE], default: POLICY }
+      responses:
+        '200':
+          description: Cálculo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationQuote' }
+        '404': { $ref: '#/components/responses/Error' }
   /bookings/{id}/cancel:
     post:
       operationId: cancelBooking
@@ -1912,30 +1979,25 @@ paths:
           description: Ajustes
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
+              schema: { $ref: '#/components/schemas/Settings' }
     put:
       operationId: saveSettings
       tags: [Admin]
       summary: Guardar ajustes operativos
-      description: Tope de reembolso del operador, duración del bloqueo de cupo, plantillas de email y similares.
+      description: Solo cambia las claves enviadas. Las claves conocidas se validan por rango.
       x-permission: settings:write
       requestBody:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              additionalProperties: true
+            schema: { $ref: '#/components/schemas/SettingsInput' }
       responses:
         '200':
           description: Ajustes
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
+              schema: { $ref: '#/components/schemas/Settings' }
+        '422': { $ref: '#/components/responses/Error' }
   /blocked-identities:
     get:
       operationId: listBlockedIdentities
@@ -2081,6 +2143,10 @@ components:
       type: apiKey
       in: header
       name: X-Booking-Token
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: desertica_refresh
   parameters:
     Id:
       name: id
@@ -2114,6 +2180,13 @@ components:
       name: Idempotency-Key
       in: header
       schema: { type: string, maxLength: 128 }
+  headers:
+    RefreshCookie:
+      description: |
+        `desertica_refresh=<token>; HttpOnly; Secure; SameSite=Strict; Path=/api/auth`. El navegador la
+        envía solo a `/api/auth/*`; el SPA nunca lee el refresh token. Al cerrar sesión se emite vacía y
+        con `Max-Age=0`.
+      schema: { type: string }
   responses:
     Error:
       description: Error
@@ -2219,10 +2292,12 @@ components:
         cancellationPolicyId: { type: [string, 'null'], format: uuid }
     Departure:
       type: object
-      required: [id, tourRefId, startsAt, capacity, seatsSold, format, language, status]
+      required: [id, tourRefId, tourSlug, tourTitle, startsAt, capacity, seatsSold, format, language, status]
       properties:
         id: { type: string, format: uuid }
         tourRefId: { type: string, format: uuid }
+        tourSlug: { type: string }
+        tourTitle: { type: string, description: Título del tour en el idioma de la petición (`Accept-Language`) con respaldo al inglés. }
         startsAt: { type: string, format: date-time }
         capacity: { type: integer }
         seatsSold: { type: integer }
@@ -2462,6 +2537,9 @@ components:
         notes: { type: string, maxLength: 1000 }
         locale: { type: string }
         attribution: { $ref: '#/components/schemas/Attribution' }
+        anonymousId:
+          type: string
+          description: Identificador anónimo del visitante (el mismo del consentimiento de cookies). Permite saber si hubo consentimiento de marketing al enviar eventos desde el servidor.
         turnstileToken: { type: string }
     CreateManualBooking:
       type: object
@@ -2501,7 +2579,7 @@ components:
             id: { type: string, format: uuid }
     BookingSummary:
       type: object
-      required: [id, reference, status, departureId, startsAt, tourSlug, customerName, currency, totalCents, paidCents]
+      required: [id, reference, status, departureId, startsAt, tourSlug, tourTitle, customerName, currency, totalCents, paidCents]
       properties:
         id: { type: string, format: uuid }
         reference: { type: string }
@@ -2510,6 +2588,7 @@ components:
         departureId: { type: string, format: uuid }
         startsAt: { type: string, format: date-time }
         tourSlug: { type: string }
+        tourTitle: { type: string }
         customerName: { type: string }
         adults: { type: integer }
         children: { type: integer }
@@ -2551,7 +2630,7 @@ components:
     PublicBooking:
       type: object
       description: Vista de la reserva para el cliente (sin datos internos).
-      required: [reference, status, tourSlug, startsAt, currency, totalCents, paidCents, pendingCents]
+      required: [reference, status, tourSlug, startsAt, format, currency, totalCents, paidCents, pendingCents, paymentOptions]
       properties:
         reference: { type: string }
         status: { $ref: '#/components/schemas/BookingStatus' }
@@ -2565,6 +2644,17 @@ components:
         paidCents: { type: integer }
         pendingCents: { type: integer }
         depositCents: { type: [integer, 'null'] }
+        format: { $ref: '#/components/schemas/TourFormat' }
+        passengers:
+          type: array
+          items:
+            type: object
+            required: [firstName, lastName]
+            properties:
+              firstName: { type: string }
+              lastName: { type: string }
+        paymentOptions:
+          $ref: '#/components/schemas/PaymentOptions'
         cancellationTiers:
           type: array
           items:
@@ -2588,6 +2678,17 @@ components:
               docType: { $ref: '#/components/schemas/DocumentType' }
               number: { type: string, example: B001-00000012 }
               pdfUrl: { type: string, format: uri }
+    PaymentOptions:
+      type: array
+      description: Pasarelas y tipos de pago disponibles para la moneda y el saldo de la reserva (vacío si no queda saldo).
+      items:
+        type: object
+        required: [provider, kinds]
+        properties:
+          provider: { type: string, enum: [STRIPE, CULQI] }
+          kinds:
+            type: array
+            items: { $ref: '#/components/schemas/PaymentKind' }
     PublicBookingCreated:
       type: object
       required: [booking, accessToken]
@@ -2597,16 +2698,7 @@ components:
           type: string
           description: Se envía como `X-Booking-Token` en las llamadas siguientes y por email.
         paymentOptions:
-          type: array
-          description: Pasarelas disponibles para la moneda de la reserva.
-          items:
-            type: object
-            required: [provider, kinds]
-            properties:
-              provider: { type: string, enum: [STRIPE, CULQI] }
-              kinds:
-                type: array
-                items: { $ref: '#/components/schemas/PaymentKind' }
+          $ref: '#/components/schemas/PaymentOptions'
 
     # ------------------------------------------------------------- Pagos
     CreatePaymentRequest:
@@ -2671,7 +2763,7 @@ components:
           items: { type: string, enum: [STRIPE, CULQI] }
     Payment:
       type: object
-      required: [id, bookingId, provider, method, kind, status, currency, amountCents]
+      required: [id, bookingId, bookingReference, provider, method, kind, status, currency, amountCents]
       properties:
         id: { type: string, format: uuid }
         bookingId: { type: string, format: uuid }
@@ -2689,10 +2781,13 @@ components:
         createdAt: { type: string, format: date-time }
     Refund:
       type: object
-      required: [id, paymentId, amountCents, reason, status]
+      required: [id, paymentId, bookingId, bookingReference, currency, amountCents, reason, status]
       properties:
         id: { type: string, format: uuid }
         paymentId: { type: string, format: uuid }
+        bookingId: { type: string, format: uuid }
+        bookingReference: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
         amountCents: { type: integer }
         reason: { type: string }
         status: { type: string, enum: [PENDING, SUCCEEDED, FAILED] }
@@ -2701,10 +2796,12 @@ components:
         createdAt: { type: string, format: date-time }
     Dispute:
       type: object
-      required: [id, paymentId, provider, status, amountCents, currency]
+      required: [id, paymentId, bookingId, bookingReference, provider, status, amountCents, currency]
       properties:
         id: { type: string, format: uuid }
         paymentId: { type: string, format: uuid }
+        bookingId: { type: string, format: uuid }
+        bookingReference: { type: string }
         provider: { $ref: '#/components/schemas/PaymentProvider' }
         providerRef: { type: string }
         status: { $ref: '#/components/schemas/DisputeStatus' }
@@ -2718,10 +2815,12 @@ components:
     # ------------------------------------------------------ Comprobantes
     Document:
       type: object
-      required: [id, bookingId, docType, status, series, number, currency, totalCents, taxableCents, igvCents]
+      required: [id, bookingId, bookingReference, customerName, docType, status, series, number, currency, totalCents, taxableCents, igvCents]
       properties:
         id: { type: string, format: uuid }
         bookingId: { type: string, format: uuid }
+        bookingReference: { type: string }
+        customerName: { type: string, description: Nombre o razón social del receptor del comprobante. }
         paymentId: { type: [string, 'null'], format: uuid }
         docType: { $ref: '#/components/schemas/DocumentType' }
         status: { $ref: '#/components/schemas/DocumentStatus' }
@@ -2827,10 +2926,9 @@ components:
     # ------------------------------------------------------------- Admin
     Session:
       type: object
-      required: [accessToken, refreshToken, expiresIn, user]
+      required: [accessToken, expiresIn, user]
       properties:
         accessToken: { type: string }
-        refreshToken: { type: string }
         expiresIn: { type: integer, description: Segundos de vigencia del token de acceso. }
         user: { $ref: '#/components/schemas/User' }
     Role:
@@ -2902,6 +3000,45 @@ components:
         after: { type: [object, 'null'], additionalProperties: true }
         createdAt: { type: string, format: date-time }
 
+    StaffQuoteRequest:
+      allOf:
+        - $ref: '#/components/schemas/QuoteRequest'
+        - type: object
+          properties:
+            overrideTotalCents: { type: integer, minimum: 0 }
+    CancellationQuote:
+      type: object
+      required: [currency, paidCents, refundCents, refundPercent]
+      properties:
+        currency: { $ref: '#/components/schemas/Currency' }
+        paidCents: { type: integer, description: Total cobrado hasta ahora. }
+        refundCents: { type: integer }
+        refundPercent: { type: integer, minimum: 0, maximum: 100 }
+        tier:
+          type: [object, 'null']
+          description: Tramo de la política aplicado.
+          properties:
+            hoursBefore: { type: integer }
+            refundPercent: { type: integer }
+        policyVersion: { type: [integer, 'null'] }
+        reason: { type: [string, 'null'], description: 'Por qué no corresponde reembolso, si es el caso.' }
+    Settings:
+      type: object
+      description: Ajustes operativos con su valor por defecto. Se permiten claves adicionales.
+      properties:
+        depositPercent: { type: integer, minimum: 0, maximum: 100, default: 30, description: Porcentaje del total que se cobra como depósito. }
+        holdMinutes: { type: integer, minimum: 1, maximum: 120, default: 15, description: Duración del bloqueo de cupo. }
+        operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
+        complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
+      additionalProperties: true
+    SettingsInput:
+      type: object
+      properties:
+        depositPercent: { type: integer, minimum: 0, maximum: 100 }
+        holdMinutes: { type: integer, minimum: 1, maximum: 120 }
+        operatorRefundLimitCents: { type: integer, minimum: 0 }
+        complaintDueDays: { type: integer, minimum: 1, maximum: 60 }
+      additionalProperties: true
     # ----------------------------------------------------------- Reportes
     Manifest:
       type: object
