@@ -29,12 +29,25 @@ export class ManifestService {
 
     const passengers = bookings.flatMap((b) => {
       const balance = pendingCents(b.totalCents, b.paidCents, b.refundedCents);
-      const signed = (passengerId: string | null) =>
-        b.waivers.find(
+      // Un descargo firmado sin nombre sirve a un solo pasajero sin descargo propio.
+      const unnamed = b.waivers.filter(
+        (w) => w.status === 'SIGNED' && w.passengerId === null,
+      );
+      const signed = (passengerId: string | null) => {
+        const own = b.waivers.find(
           (w) =>
             w.status === 'SIGNED' &&
-            (w.passengerId === passengerId || w.passengerId === null),
+            passengerId !== null &&
+            w.passengerId === passengerId,
         );
+        if (own) return own;
+        const hasPending =
+          passengerId !== null &&
+          b.waivers.some(
+            (w) => w.passengerId === passengerId && w.status === 'PENDING',
+          );
+        return hasPending ? undefined : unnamed.shift();
+      };
       const rows =
         b.passengers.length > 0
           ? b.passengers.map((p) => ({

@@ -31,7 +31,10 @@ export class PublicAccessService {
    */
   async request(reference: string, rawEmail: string): Promise<void> {
     const email = normalizeEmail(rawEmail);
-    const hits = await this.store.incr(`access:email:${sha256(email)}`, HOUR);
+    const hits = await this.store.incr(
+      `access:${sha256(`${email}|${reference.trim().toUpperCase()}`)}`,
+      HOUR,
+    );
     if (hits.value > 3) return;
 
     const booking = await this.prisma.booking.findUnique({

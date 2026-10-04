@@ -155,7 +155,8 @@ paths:
               required: [departureId, seats]
               properties:
                 departureId: { type: string, format: uuid }
-                seats: { type: integer, minimum: 1 }
+                seats: { type: integer, minimum: 1, maximum: 20 }
+                turnstileToken: { type: string }
       responses:
         '404': { $ref: '#/components/responses/Error' }
         '201':
@@ -244,7 +245,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicBooking' }
         '401': { $ref: '#/components/responses/Error' }
-        '404': { $ref: '#/components/responses/Error' }
   /public/bookings/{reference}/payments/stripe-intent:
     post:
       operationId: createBookingStripeIntent
@@ -1687,6 +1687,7 @@ paths:
               properties:
                 answer: { type: string }
       responses:
+        '409': { $ref: '#/components/responses/Error' }
         '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Reclamo respondido
@@ -2446,8 +2447,8 @@ components:
       properties:
         holdToken: { type: string }
         currency: { $ref: '#/components/schemas/Currency' }
-        adults: { type: integer, minimum: 1 }
-        children: { type: integer, minimum: 0, default: 0 }
+        adults: { type: integer, minimum: 1, maximum: 20 }
+        children: { type: integer, minimum: 0, maximum: 20, default: 0 }
         customer: { $ref: '#/components/schemas/CustomerInput' }
         passengers:
           type: array

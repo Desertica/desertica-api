@@ -298,6 +298,75 @@ describe('Reservas (e2e)', () => {
       });
     });
 
+    it('refuses a refund-producing reschedule without payments:refund', async () => {
+      const lowRole = await prisma.role.upsert({
+        where: { key: 'norefund' },
+        update: {},
+        create: {
+          key: 'norefund',
+          name: 'Sin reembolsos',
+          permissions: [
+            'bookings:read',
+            'bookings:write',
+            'payments:write',
+            'departures:read',
+          ],
+        },
+      });
+      const email = `norefund-${rand()}@desertica.pe`;
+      await prisma.user.create({
+        data: { email, name: 'NR', roleId: lowRole.id },
+      });
+      const login = await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${email}` })
+        .expect(200);
+      const auth = {
+        Authorization: `Bearer ${(login.body as Body).accessToken}`,
+      };
+      const a = await fx.departure();
+      const cheap = await fx.departure({ startsAt: inHours(24 * 15) });
+      const day = cheap.startsAt.toISOString().slice(0, 10);
+      const rule = await prisma.priceRule.create({
+        data: {
+          tourRefId: fx.tour.id,
+          currency: 'USD',
+          adultCents: 5000,
+          priority: 20,
+          validFrom: new Date(day),
+          validTo: new Date(day),
+        },
+      });
+      const { id } = await webBooking(a.id, { adults: 1 });
+      await http()
+        .post(`/api/bookings/${id}/payments/manual`)
+        .set(auth)
+        .send({
+          method: 'CASH',
+          kind: 'FULL',
+          amountCents: 10000,
+          currency: 'USD',
+        })
+        .expect(201);
+      await http()
+        .post(`/api/bookings/${id}/reschedule`)
+        .set(auth)
+        .send({ targetDepartureId: cheap.id })
+        .expect(403);
+      expect(
+        (await prisma.booking.findUniqueOrThrow({ where: { id } })).departureId,
+      ).toBe(a.id);
+      await http()
+        .post(`/api/bookings/${id}/reschedule`)
+        .set(operator.auth)
+        .send({ targetDepartureId: cheap.id })
+        .expect(200);
+      await prisma.priceRule.update({
+        where: { id: rule.id },
+        data: { active: false },
+      });
+    });
+
     it('is idempotent with Idempotency-Key and rejects a different body', async () => {
       const dep = await fx.departure();
       const h = await hold(dep.id, 2).expect(201);
@@ -337,6 +406,32 @@ describe('Reservas (e2e)', () => {
       expect(JSON.stringify(stored.body)).not.toContain(
         (first.body as Body).accessToken,
       );
+      expect(JSON.stringify(stored.body)).not.toContain(
+        (first.body as Body).booking.waivers[0].token,
+      );
+    });
+
+    it('does not overwrite an existing customer from the public flow', async () => {
+      const dep = await fx.departure();
+      const email = `fijo-${rand()}@example.com`;
+      const base = customerInput({
+        email,
+        firstName: 'Mario',
+        lastName: 'Rojas',
+        phone: '+51900111222',
+        locale: LOCALE,
+      });
+      await webBooking(dep.id, { customer: base, adults: 1 });
+      await webBooking(dep.id, {
+        customer: { ...base, phone: '+51999999999', idDocNumber: '99999999' },
+        adults: 1,
+      });
+      const customers = await prisma.customer.findMany({ where: { email } });
+      expect(customers).toHaveLength(1);
+      expect(customers[0]).toMatchObject({
+        phone: '+51900111222',
+        idDocNumber: '12345678',
+      });
     });
 
     it('lets only one of several simultaneous retries create the booking', async () => {

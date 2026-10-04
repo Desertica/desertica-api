@@ -76,6 +76,7 @@ export class AttributionDto {
 export class CreateHoldDto {
   @IsUUID() departureId!: string;
   @IsInt() @Min(1) @Max(20) seats!: number;
+  @IsOptional() @IsString() @MaxLength(2048) turnstileToken?: string;
 }
 
 export class CreatePublicBookingDto {

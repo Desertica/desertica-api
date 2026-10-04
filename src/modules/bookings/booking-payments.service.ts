@@ -15,7 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../auth/auth.types';
 import { NotificationsService } from '../notifications/notifications.service';
-import { toPaymentDto } from './booking.mappers';
+import { bookingPending, toPaymentDto } from './booking.mappers';
 import { generateToken } from './booking-support';
 import { CreatePaymentLinkDto, ManualPaymentDto } from './dto/booking.dto';
 import { links } from './links';
@@ -277,6 +277,17 @@ export class BookingPaymentsService {
       Date.now() + (dto.expiresInHours ?? 48) * 3_600_000,
     );
     const link = await this.prisma.$transaction(async (tx) => {
+      // Se vuelve a comprobar bajo candado: un pago simultáneo pudo bajar el saldo.
+      await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${bookingId} FOR UPDATE`;
+      const fresh = await tx.booking.findUniqueOrThrow({
+        where: { id: bookingId },
+      });
+      if (
+        amountCents >
+        pendingCents(fresh.totalCents, fresh.paidCents, fresh.refundedCents)
+      ) {
+        throw new ConflictException('The pending balance changed');
+      }
       const created = await tx.paymentLink.create({
         data: {
           token: generateToken(24),
@@ -343,11 +354,8 @@ export class BookingPaymentsService {
       },
     });
     if (!link) throw new NotFoundException('Payment link not found');
-    if (
-      link.usedAt ||
-      link.expiresAt <= now ||
-      link.booking.status === 'CANCELLED'
-    ) {
+    const pending = bookingPending(link.booking);
+    if (link.usedAt || link.expiresAt <= now || pending <= 0) {
       throw new GoneException('The payment link expired or was already used');
     }
     return {
@@ -356,7 +364,8 @@ export class BookingPaymentsService {
       startsAt: link.booking.departure.startsAt,
       kind: link.kind,
       currency: link.currency,
-      amountCents: link.amountCents,
+      // Nunca más que el saldo de hoy.
+      amountCents: Math.min(link.amountCents, pending),
       expiresAt: link.expiresAt,
       paymentOptions: [...(link.currency === 'USD' ? ['STRIPE'] : []), 'CULQI'],
     };

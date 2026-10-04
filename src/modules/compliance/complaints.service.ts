@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   HttpException,
   HttpStatus,
   Inject,
@@ -197,10 +198,15 @@ export class ComplaintsService {
     if (!before) throw new NotFoundException('Complaint not found');
     const answeredAt = new Date();
     const updated = await this.prisma.$transaction(async (tx) => {
-      const row = await tx.complaint.update({
-        where: { id },
+      // La respuesta es evidencia del plazo legal: se da una sola vez.
+      const claimed = await tx.complaint.updateMany({
+        where: { id, status: { not: 'ANSWERED' } },
         data: { answer: dto.answer, answeredAt, status: 'ANSWERED' },
       });
+      if (claimed.count !== 1) {
+        throw new ConflictException('The complaint was already answered');
+      }
+      const row = await tx.complaint.findUniqueOrThrow({ where: { id } });
       await this.audit.record(
         {
           actorUserId: actorId,

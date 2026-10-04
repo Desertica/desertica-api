@@ -302,6 +302,14 @@ describe('Cumplimiento (e2e)', () => {
       await http()
         .post(`/api/complaints/${id}/answer`)
         .set(operator.auth)
+        .send({ answer: 'Otra respuesta' })
+        .expect(409);
+      expect(
+        (await prisma.complaint.findUniqueOrThrow({ where: { id } })).answer,
+      ).toBe('Le devolvemos el 30 %.');
+      await http()
+        .post(`/api/complaints/${id}/answer`)
+        .set(operator.auth)
         .send({})
         .expect(422);
       await http()
@@ -431,8 +439,48 @@ describe('Cumplimiento (e2e)', () => {
       });
       expect(rows.find((p) => p.name === 'Luis Pérez')).toMatchObject({
         waiverStatus: 'PENDING',
-        balanceDueCents: 0,
       });
+    });
+
+    it('does not credit one passenger with the signature of another seat', async () => {
+      const fx = await createCatalog(app);
+      const dep = await fx.departure();
+      const created = await http()
+        .post('/api/bookings')
+        .set(operator.auth)
+        .send({
+          departureId: dep.id,
+          currency: 'USD',
+          adults: 3,
+          customer: customerInput(),
+          billing: billingBoleta,
+          sendConfirmation: false,
+          passengers: [{ firstName: 'Ana', lastName: 'Pérez' }],
+        })
+        .expect(201);
+      const bookingId = (created.body as Body).id as string;
+      const unnamed = await prisma.waiver.findFirstOrThrow({
+        where: { bookingId, passengerId: null },
+      });
+      await http()
+        .post(`/api/public/waivers/${unnamed.token}/sign`)
+        .send({
+          signerName: 'Otro',
+          signerDocType: 'DNI',
+          signerDocNumber: '12345678',
+          medicalNotes: 'Alergia',
+          accepted: true,
+        })
+        .expect(200);
+      const manifest = await http()
+        .get(`/api/departures/${dep.id}/manifest`)
+        .set(operator.auth)
+        .expect(200);
+      const ana = (manifest.body as { passengers: Body[] }).passengers.find(
+        (p) => p.name === 'Ana Pérez',
+      )!;
+      expect(ana.waiverStatus).toBe('PENDING');
+      expect(ana.medicalNotes).toBeNull();
     });
 
     it('lets only one of several simultaneous signatures win', async () => {

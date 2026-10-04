@@ -85,6 +85,9 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Texto del descargo**: `Waiver.version` es 1 fijo y el texto del descargo no se guarda como snapshot (solo los documentos legales). Definir cómo se versiona (¿tipo `WAIVER` en `LegalDocument`?) antes de generar el PDF firmado.
 - [ ] **Política de cancelación**: un tour sin política asignada se reserva con "sin reembolso" (`tiers: []`). Asignar una a todos los tours antes de vender; considerar exigirla en la publicación.
 - [ ] **Reclamos**: el plazo se cuenta en días hábiles (lunes a viernes, sin feriados) con `complaintDueDays` = 15. Confirmar con el abogado si son 15 hábiles o 30 corridos y cargar los feriados.
+- [ ] **Bloqueos de cupo**: el tope es 8 bloqueos por IP cada 15 minutos más captcha; un atacante con muchas IP aún puede retener cupo. Evaluar un tope de bloqueos activos por salida o validación previa.
+- [ ] **"Mi reserva"**: el correo con enlace tarda más cuando la referencia y el correo coinciden; para igualar la latencia hay que encolar el envío.
+- [ ] **ARCO**: `eraseCustomer` no puede borrar datos personales de `AuditLog` (inmutable). La auditoría de clientes ya guarda solo nombres de campos; mantener ese criterio en lo nuevo.
 - [ ] **Imagen Docker**: se verificó el `build` de Nest pero no `docker build` (no había daemon). La imagen incluye devDependencies porque el CLI de Prisma se usa para migrar.
 
 ## Documentación

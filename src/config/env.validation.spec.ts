@@ -23,6 +23,8 @@ describe('envSchema', () => {
     );
     expect(error?.message).toMatch(/CORS_ORIGINS/);
     expect(error?.message).toMatch(/JWT_ACCESS_SECRET/);
+    expect(error?.message).toMatch(/TURNSTILE_SECRET_KEY/);
+    expect(error?.message).toMatch(/PUBLIC_WEB_URL/);
   });
 
   it('accepts a complete production config', () => {
@@ -31,18 +33,24 @@ describe('envSchema', () => {
       NODE_ENV: 'production',
       CORS_ORIGINS: 'https://desertica.pe',
       JWT_ACCESS_SECRET: 'x'.repeat(40),
+      TURNSTILE_SECRET_KEY: 'ts',
+      GOOGLE_CLIENT_ID: 'gid',
+      PUBLIC_WEB_URL: 'https://desertica.pe',
     });
     expect(error).toBeUndefined();
   });
 
   it('forbids the fake Google login in production', () => {
-    const { error } = envSchema.validate({
-      ...base,
-      NODE_ENV: 'production',
-      CORS_ORIGINS: 'https://desertica.pe',
-      JWT_ACCESS_SECRET: 'x'.repeat(40),
-      AUTH_ALLOW_FAKE_GOOGLE: true,
-    });
+    const { error } = envSchema.validate(
+      {
+        ...base,
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://desertica.pe',
+        JWT_ACCESS_SECRET: 'x'.repeat(40),
+        AUTH_ALLOW_FAKE_GOOGLE: true,
+      },
+      { abortEarly: false },
+    );
     expect(error?.message).toMatch(/AUTH_ALLOW_FAKE_GOOGLE/);
   });
 

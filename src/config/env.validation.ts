@@ -36,10 +36,20 @@ export const envSchema = Joi.object({
   THROTTLE_TTL_MS: Joi.number().integer().min(1000).default(60_000),
 
   /** Base pública de los enlaces que se envían por correo (web del cliente). */
-  PUBLIC_WEB_URL: Joi.string().uri().default('http://localhost:4200'),
+  PUBLIC_WEB_URL: Joi.string()
+    .uri()
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.required(),
+      otherwise: Joi.string().default('http://localhost:4200'),
+    }),
 
   // Auth del staff (M2)
-  GOOGLE_CLIENT_ID: Joi.string().allow('').default(''),
+  GOOGLE_CLIENT_ID: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.string().allow('').default(''),
+  }),
   ALLOWED_EMAIL_DOMAIN: Joi.string().default('desertica.pe'),
   JWT_ACCESS_SECRET: Joi.string()
     .min(32)
@@ -58,7 +68,11 @@ export const envSchema = Joi.object({
     .when('NODE_ENV', { is: 'production', then: Joi.valid(false) }),
 
   /** Cloudflare Turnstile. Sin clave no se verifica el captcha (desarrollo). */
-  TURNSTILE_SECRET_KEY: Joi.string().allow('').default(''),
+  TURNSTILE_SECRET_KEY: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.required(),
+    otherwise: Joi.string().allow('').default(''),
+  }),
   /** Destino de los avisos internos (contacto, reclamos). Opcional. */
   STAFF_NOTIFY_EMAIL: Joi.string().email().allow('').default(''),
   /** Minutos para pagar una reserva web antes de que se libere el cupo. */
