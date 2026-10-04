@@ -52,6 +52,7 @@ export class PublicComplianceService {
       await this.notifications.sendEmail({
         to: staff,
         template: 'contact_message',
+        replyTo: message.email,
         data: {
           id: message.id,
           name: message.name,
