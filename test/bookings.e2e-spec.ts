@@ -1,9 +1,11 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { BackgroundQueue } from '../src/common/queue/background-queue';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
+import { SettingsService } from '../src/modules/settings/settings.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import {
   billingBoleta,
@@ -116,6 +118,71 @@ describe('Reservas (e2e)', () => {
       await http().delete(`/api/public/holds/${h.token}`).expect(204);
       await http().delete(`/api/public/holds/${h.token}`).expect(204); // idempotente
       expect(await left()).toBe(5);
+    });
+
+    it('limits the active holds per departure and frees the slot on release or expiry', async () => {
+      const settings = app.get(SettingsService);
+      const original = settings.getNumber.bind(settings);
+      // Solo esta instancia de la app ve el tope bajo: las demás pruebas usan el predeterminado (10).
+      const spy = jest
+        .spyOn(settings, 'getNumber')
+        .mockImplementation((key) =>
+          key === 'maxActiveHoldsPerDeparture'
+            ? Promise.resolve(2)
+            : original(key),
+        );
+      try {
+        const dep = await fx.departure({ capacity: 10 });
+        const first = await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(201);
+        const denied = await hold(dep.id, 1).expect(429);
+        expect((denied.body as Body).details).toMatchObject({
+          reason: 'TOO_MANY_HOLDS',
+          retryAfterSeconds: expect.any(Number),
+        });
+        expect((denied.body as Body).details.retryAfterSeconds).toBeGreaterThan(
+          0,
+        );
+
+        // Otra salida no se ve afectada.
+        const other = await fx.departure({ capacity: 10 });
+        await hold(other.id, 1).expect(201);
+
+        await http()
+          .delete(`/api/public/holds/${(first.body as Body).token}`)
+          .expect(204);
+        await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(429);
+
+        // Un bloqueo vencido deja de contar.
+        await prisma.hold.updateMany({
+          where: { departureId: dep.id },
+          data: { expiresAt: new Date(Date.now() - 1000) },
+        });
+        await hold(dep.id, 1).expect(201);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not count holds that already became bookings', async () => {
+      const settings = app.get(SettingsService);
+      const original = settings.getNumber.bind(settings);
+      const spy = jest
+        .spyOn(settings, 'getNumber')
+        .mockImplementation((key) =>
+          key === 'maxActiveHoldsPerDeparture'
+            ? Promise.resolve(1)
+            : original(key),
+        );
+      try {
+        const dep = await fx.departure({ capacity: 10 });
+        await webBooking(dep.id, { adults: 1 });
+        await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(429);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('rejects unknown, closed and past-cutoff departures', async () => {
@@ -663,6 +730,7 @@ describe('Reservas (e2e)', () => {
         .post('/api/public/bookings/access')
         .send({ reference: a.reference, email: 'otro@example.com' })
         .expect(202);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
@@ -676,6 +744,7 @@ describe('Reservas (e2e)', () => {
           email: email.toUpperCase(),
         })
         .expect(202);
+      await app.get(BackgroundQueue).drain();
       const mail = mailer.sent
         .slice(before)
         .find((m) => m.template === 'booking_access')!;
@@ -701,6 +770,7 @@ describe('Reservas (e2e)', () => {
           .send({ reference: a.reference, email })
           .expect(202);
       }
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
