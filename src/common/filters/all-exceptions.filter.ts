@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { STATUS_CODES } from 'node:http';
+import { describeError, redactUrl } from '../logger/sanitize';
 
 export interface ErrorBody {
   statusCode: number;
@@ -32,8 +33,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const body = this.toBody(exception);
     if (body.statusCode >= 500) {
       this.logger.error(
-        `${request.method} ${request.url} -> ${body.statusCode}`,
-        exception instanceof Error ? exception.stack : String(exception),
+        `${request.method} ${redactUrl(request.url)} -> ${body.statusCode}`,
+        describeError(exception),
       );
     }
     if (response.headersSent) return;
