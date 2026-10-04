@@ -1,5 +1,6 @@
 import {
   INestApplication,
+  Logger,
   UnprocessableEntityException,
   ValidationError,
   ValidationPipe,
@@ -36,7 +37,17 @@ export function configureApp(app: INestApplication): void {
     set: (key: string, value: unknown) => void;
     disable: (key: string) => void;
   };
-  http.set('trust proxy', config.get('TRUST_PROXY', { infer: true }));
+  // Cuántos saltos de proxy se confían para leer la IP real (`req.ip`) de `X-Forwarded-For`; Express
+  // cuenta desde el final de la lista, así que lo que el cliente antepone no cuenta como IP.
+  const trustProxy = config.get('TRUST_PROXY', { infer: true });
+  http.set('trust proxy', trustProxy);
+  if (config.get('NODE_ENV', { infer: true }) === 'production') {
+    if (trustProxy === 0) {
+      new Logger('configureApp').warn(
+        'TRUST_PROXY=0 in production: every visitor will share the proxy address and the per-IP limits will not work. Set the number of proxy hops (2 behind Cloudflare and Coolify).',
+      );
+    }
+  }
   http.disable('x-powered-by');
 
   app.use(helmet());
