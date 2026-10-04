@@ -8,6 +8,7 @@ import { KEY_VALUE_STORE, KeyValueStore } from './common/cache/key-value-store';
 import { KeyValueThrottlerStorage } from './common/cache/kv-throttler-storage';
 import { buildLoggerParams } from './common/logger/logger.config';
 import { EnvVars, envSchema } from './config/env.validation';
+import { AdminModule } from './modules/admin/admin.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { AuthModule } from './modules/auth/auth.module';
@@ -74,6 +75,7 @@ import { PrismaModule } from './prisma/prisma.module';
     ComplianceModule,
     BookingsModule,
     CustomersModule,
+    AdminModule,
     HealthModule,
   ],
   providers: [

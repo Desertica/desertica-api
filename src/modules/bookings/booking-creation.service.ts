@@ -17,6 +17,7 @@ import { CaptchaService } from '../../common/captcha/captcha.service';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { EnvVars } from '../../config/env.validation';
 import { PrismaService } from '../../prisma/prisma.service';
+import { BlockedIdentitiesService } from '../admin/blocked-identities.service';
 import { AuditService } from '../audit/audit.service';
 import { AvailabilityService } from '../catalog/availability.service';
 import { isBlackedOut, isOnSale } from '../catalog/pricing';
@@ -89,6 +90,7 @@ export class BookingCreationService {
     private readonly audit: AuditService,
     private readonly idempotency: IdempotencyService,
     private readonly captcha: CaptchaService,
+    private readonly blocked: BlockedIdentitiesService,
     private readonly access: BookingAccessService,
     private readonly notifications: NotificationsService,
     private readonly view: BookingViewService,
@@ -102,6 +104,10 @@ export class BookingCreationService {
     ctx: { ip?: string; userAgent?: string; idempotencyKey?: string },
     now = new Date(),
   ) {
+    await this.blocked.assertAllowed({
+      email: dto.customer.email,
+      ip: ctx.ip,
+    });
     // Un reintento con la misma clave no vuelve a pedir el captcha (el token es de un solo uso).
     const retry =
       ctx.idempotencyKey !== undefined &&

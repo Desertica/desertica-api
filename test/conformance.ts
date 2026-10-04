@@ -124,6 +124,15 @@ export function checkConformance(
     ];
   }
   const contentType = res.headers['content-type'] ?? '';
+  // Una respuesta en otro tipo de medio documentado (p. ej. `text/csv`) no es JSON.
+  const mediaType = contentType.split(';')[0].trim();
+  if (
+    mediaType &&
+    mediaType !== 'application/json' &&
+    documented?.content?.[mediaType]
+  ) {
+    return [];
+  }
   const validate = validatorFor(op, res.status);
   if (!validate) {
     // Sin esquema JSON documentado (204, binarios, solo descripción).
