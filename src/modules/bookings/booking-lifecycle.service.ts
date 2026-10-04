@@ -72,7 +72,7 @@ export class BookingLifecycleService {
     }));
   }
 
-  private async createPendingRefunds(
+  async createPendingRefunds(
     tx: Tx,
     bookingId: string,
     amountCents: number,
@@ -201,16 +201,10 @@ export class BookingLifecycleService {
           action: 'booking.update',
           entity: 'Booking',
           entityId: id,
-          before: {
-            fields: changed,
-            ...(changed.includes('notes') ? { notes: before.notes } : {}),
-            ...(changed.includes('billing') ? { billing: before.billing } : {}),
-          },
-          after: {
-            fields: changed,
-            ...(changed.includes('notes') ? { notes: dto.notes } : {}),
-            ...(changed.includes('billing') ? { billing: dto.billing } : {}),
-          },
+          // Solo los nombres de los campos: la auditoría es inmutable y no debe guardar
+          // datos personales (notas, receptor del comprobante, contacto).
+          before: { fields: changed },
+          after: { fields: changed },
           ip,
         },
         tx,
@@ -622,7 +616,7 @@ export class BookingLifecycleService {
 
   // -------------------------------------------------------- Correo
 
-  private async notifyCustomer(
+  async notifyCustomer(
     bookingId: string,
     template: string,
     extra: Record<string, unknown>,
