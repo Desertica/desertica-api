@@ -1,0 +1,5 @@
+extends:
+  - recommended
+rules:
+  # Los endpoints sin entrada del usuario (health, webhooks de eventos, listados) no necesitan 4xx.
+  operation-4xx-response: off

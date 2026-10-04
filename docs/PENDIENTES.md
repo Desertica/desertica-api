@@ -60,14 +60,19 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 
 - Migración de reservas del CMS: el negocio es nuevo y no hay histórico.
 
+## CI (la sesión cloud no puede modificar workflows de GitHub Actions)
+
+- [ ] En `desertica-api`, añadir a `.github/workflows/ci.yml`, después de `npm run lint`, los pasos `npm run openapi:lint` y `npx prisma validate`. *Tú (requiere permiso `workflow`).*
+- [ ] Crear los workflows de CI e imagen Docker de `desertica-backoffice` y `desertica-billing` (copiar el patrón de `desertica-api` y `desertica-web`).
+
 ## Documentación
 
 - [ ] ADRs de las decisiones del plan.
-- [ ] `CLAUDE.md` de `desertica-backoffice` y `desertica-billing`.
+- [x] `CLAUDE.md` de `desertica-api`, `desertica-backoffice` y `desertica-billing`.
 
 ## Entorno cloud (a configurar antes de las sesiones en paralelo)
 
 - [ ] Permitir en la red del entorno los hosts de Stripe (test), Culqi (sandbox), SUNAT beta, Google, Meta y los registros de paquetes (Packagist, npm).
 - [ ] Instalar PHP 8.3, Composer, Redis y Postgres en el script de configuración del entorno.
 - [ ] Guardar las claves de prueba como secretos del entorno. El certificado digital y la clave SOL reales no van a cloud.
-- [ ] Crear los repos `desertica-backoffice` y `desertica-billing` y añadirlos a las sesiones.
+- [x] Crear los repos `desertica-backoffice` y `desertica-billing` y añadirlos a las sesiones.
