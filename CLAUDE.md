@@ -21,6 +21,7 @@ Usa **Node 22**.
 ## Rules
 
 - **Contrato primero.** Un cambio de comportamiento o de forma empieza en `openapi/openapi.yaml` (o `openapi/billing.yaml`) y se implementa después. El `operationId` es el nombre del método del cliente generado: no se renombra uno existente sin avisar a web y backoffice.
+- **Clientes del contrato**: no se publica un paquete. `desertica-web` y `desertica-backoffice` generan sus tipos con `openapi-typescript` (y llaman con `openapi-fetch`) a partir de `openapi/openapi.yaml` de este repo, clonado al lado (`../desertica-api`), y commitean el resultado. `desertica-billing` implementa `openapi/billing.yaml`. Verificado: ambos archivos generan TypeScript válido con `openapi-typescript@7`.
 - **Dinero**: enteros en la unidad menor (`*Cents`), siempre con IGV incluido. El precio es único para todos los clientes; no hay precio ni exoneración por nacionalidad. Monedas `USD` y `PEN`. Stripe cobra solo USD; Culqi cobra USD o PEN.
 - **Fuentes de verdad**: el contenido editorial vive en el CMS y aquí solo hay `TourRef` (slug y ajustes operativos); dinero, cupos, reservas y comprobantes viven aquí. No dupliques títulos ni textos de tours.
 - **Series y correlativos** (`Series.nextNumber`) son del API. `desertica-billing` recibe serie y número ya asignados.
