@@ -5,7 +5,6 @@ import {
   Get,
   HttpCode,
   Param,
-  ParseUUIDPipe,
   Patch,
   Post,
   Put,
@@ -13,7 +12,9 @@ import {
   Req,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { rateLimit } from '../../common/throttle';
 import type { Request } from 'express';
+import { UuidPipe } from '../../common/pipes/id-pipes';
 import { PaginationQuery } from '../../common/pagination/pagination';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser, Public, RequirePermission } from '../auth/decorators';
@@ -59,14 +60,14 @@ export class TourRefsController {
 
   @Get(':id')
   @RequirePermission('catalog:read')
-  get(@Param('id', ParseUUIDPipe) id: string) {
+  get(@Param('id', UuidPipe) id: string) {
     return this.tourRefs.get(id);
   }
 
   @Patch(':id')
   @RequirePermission('catalog:write')
   update(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @Body() dto: UpdateTourRefDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -100,14 +101,14 @@ export class DeparturesController {
 
   @Get(':id')
   @RequirePermission('departures:read')
-  get(@Param('id', ParseUUIDPipe) id: string) {
+  get(@Param('id', UuidPipe) id: string) {
     return this.departures.get(id);
   }
 
   @Patch(':id')
   @RequirePermission('departures:write')
   update(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @Body() dto: UpdateDepartureDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -117,7 +118,7 @@ export class DeparturesController {
 
   @Get(':id/manifest')
   @RequirePermission('departures:read')
-  getManifest(@Param('id', ParseUUIDPipe) id: string) {
+  getManifest(@Param('id', UuidPipe) id: string) {
     return this.manifest.forDeparture(id);
   }
 }
@@ -145,7 +146,7 @@ export class PriceRulesController {
   @Put(':id')
   @RequirePermission('prices:write')
   replace(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @Body() dto: PriceRuleInputDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
@@ -157,7 +158,7 @@ export class PriceRulesController {
   @HttpCode(204)
   @RequirePermission('prices:write')
   async deactivate(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -189,7 +190,7 @@ export class BlackoutsController {
   @HttpCode(204)
   @RequirePermission('departures:write')
   async delete(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
   ) {
@@ -224,14 +225,14 @@ export class PublicCatalogController {
   constructor(private readonly availability: AvailabilityService) {}
 
   @Get('tours/:slug/availability')
-  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Throttle(rateLimit(60, 60_000))
   getAvailability(@Param('slug') slug: string, @Query() q: AvailabilityQuery) {
     return this.availability.forMonth(slug, q);
   }
 
   @Post('quotes')
   @HttpCode(200)
-  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  @Throttle(rateLimit(60, 60_000))
   createQuote(@Body() dto: QuoteRequestDto) {
     return this.availability.quote(dto);
   }
