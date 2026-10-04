@@ -394,6 +394,8 @@ model Booking {
   billing              Json
   /// UTM, gclid, fbclid y landing de la primera visita.
   attribution          Json?
+  /// Identificador anónimo del visitante (el del consentimiento de cookies), para eventos desde el servidor.
+  anonymousId          String?
   createdByUserId      String?
   cancelledAt          DateTime?
   cancelReason         String?

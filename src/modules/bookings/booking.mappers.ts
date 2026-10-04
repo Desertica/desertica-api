@@ -55,9 +55,20 @@ export const toPaymentDto = (p: Payment, bookingReference?: string) => ({
   createdAt: p.createdAt,
 });
 
-export const toDocumentDto = (d: Document & { series: Series }) => ({
+/** Nombre del receptor del comprobante: el de su snapshot, o el respaldo dado. */
+const receiverName = (snapshot: unknown, fallback: string): string => {
+  const name = (snapshot as { name?: unknown } | null)?.name;
+  return typeof name === 'string' && name ? name : fallback;
+};
+
+export const toDocumentDto = (
+  d: Document & { series: Series },
+  booking: { reference: string; customerName: string },
+) => ({
   id: d.id,
   bookingId: d.bookingId,
+  bookingReference: booking.reference,
+  customerName: receiverName(d.customerSnapshot, booking.customerName),
   paymentId: d.paymentId,
   docType: d.docType,
   status: d.status,
@@ -90,11 +101,14 @@ export const toWaiverDto = (w: Waiver) => ({
 });
 
 type SummarySource = Booking & {
-  departure: Departure & { tourRef: Pick<TourRef, 'slug'> };
+  departure: Departure & { tourRef: Pick<TourRef, 'slug' | 'title'> };
   customer: Pick<Customer, 'firstName' | 'lastName'>;
 };
 
-export const toBookingSummary = (b: SummarySource) => ({
+export const toBookingSummary = (
+  b: SummarySource,
+  titles?: Map<string, string>,
+) => ({
   id: b.id,
   reference: b.reference,
   status: b.status,
@@ -102,6 +116,7 @@ export const toBookingSummary = (b: SummarySource) => ({
   departureId: b.departureId,
   startsAt: b.departure.startsAt,
   tourSlug: b.departure.tourRef.slug,
+  tourTitle: titles?.get(b.departure.tourRef.slug) ?? b.departure.tourRef.title,
   customerName: `${b.customer.firstName} ${b.customer.lastName}`,
   adults: b.adults,
   children: b.children,
@@ -121,9 +136,9 @@ type FullSource = SummarySource & {
 
 export const toBookingDto = (
   b: FullSource,
-  extra: { refundDueCents?: number } = {},
+  extra: { refundDueCents?: number; titles?: Map<string, string> } = {},
 ) => ({
-  ...toBookingSummary(b),
+  ...toBookingSummary(b, extra.titles),
   customer: toCustomerDto(b.customer),
   depositCents: b.depositCents,
   refundedCents: b.refundedCents,
@@ -138,7 +153,15 @@ export const toBookingDto = (
   cancelReason: b.cancelReason,
   passengers: b.passengers.map(toPassengerDto),
   payments: b.payments.map((p) => toPaymentDto(p, b.reference)),
-  documents: b.documents.map(toDocumentDto),
+  documents: b.documents.map((d) =>
+    toDocumentDto(d, {
+      reference: b.reference,
+      customerName: receiverName(
+        b.billing,
+        `${b.customer.firstName} ${b.customer.lastName}`,
+      ),
+    }),
+  ),
   waivers: b.waivers.map(toWaiverDto),
 });
 
