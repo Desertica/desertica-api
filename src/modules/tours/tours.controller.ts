@@ -8,12 +8,14 @@ import {
   Patch,
   Post,
 } from '@nestjs/common';
+import { Public } from '../auth/decorators';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CreateTourDto } from './dto/create-tour.dto';
 import { UpdateTourDto } from './dto/update-tour.dto';
 import { ToursService } from './tours.service';
 
 @ApiTags('tours')
+@Public()
 @Controller('tours')
 export class ToursController {
   constructor(private readonly toursService: ToursService) {}
