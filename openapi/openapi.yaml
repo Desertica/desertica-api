@@ -31,6 +31,8 @@ info:
     `desertica_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/auth`). El backoffice y el API deben
     estar en el mismo sitio (subdominios del mismo dominio) y el API acepta CORS con credenciales solo desde
     los orígenes configurados. El refresh rota en cada uso y reutilizar uno viejo revoca todas las sesiones.
+    Como `SameSite=Strict` deja pasar a los subdominios del mismo sitio, `/auth/refresh` y `/auth/logout`
+    responden 403 si el navegador declara un `Origin` que no está en `CORS_ORIGINS`.
 
     ## Enlaces de los correos
     Se arman sobre `PUBLIC_WEB_URL`: acceso a la reserva `/booking/{reference}?token=<accessToken>`,
@@ -159,7 +161,11 @@ paths:
       operationId: createHold
       tags: [Public]
       summary: Bloquear cupo temporalmente
-      description: Reserva los asientos durante unos minutos mientras el cliente completa el pago.
+      description: |
+        Reserva los asientos durante unos minutos mientras el cliente completa el pago. Responde 429 si la IP
+        ya pidió demasiados bloqueos o si la salida ya tiene el máximo de bloqueos vigentes
+        (`maxActiveHoldsPerDeparture`, 10 por defecto): en ese caso `details.reason` es `TOO_MANY_HOLDS` y
+        `details.retryAfterSeconds` dice cuándo se libera el primero.
       security: []
       requestBody:
         required: true
@@ -3201,6 +3207,7 @@ components:
       properties:
         depositPercent: { type: integer, minimum: 0, maximum: 100, default: 30, description: Porcentaje del total que se cobra como depósito. }
         holdMinutes: { type: integer, minimum: 1, maximum: 120, default: 15, description: Duración del bloqueo de cupo. }
+        maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100, default: 10, description: Bloqueos de cupo vigentes (sin reserva) que admite una salida a la vez; pasado el tope `createHold` responde 429. }
         operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
       additionalProperties: true
@@ -3209,6 +3216,7 @@ components:
       properties:
         depositPercent: { type: integer, minimum: 0, maximum: 100 }
         holdMinutes: { type: integer, minimum: 1, maximum: 120 }
+        maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100 }
         operatorRefundLimitCents: { type: integer, minimum: 0 }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60 }
       additionalProperties: true
