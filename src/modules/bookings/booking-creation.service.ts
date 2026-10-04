@@ -6,13 +6,18 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { computeDeposit, priceBooking } from '../../common/money';
+import {
+  computeDeposit,
+  priceBooking,
+  type CancellationTier,
+} from '../../common/money';
 import { Prisma } from '../../generated/prisma/client';
 import { Currency } from '../../generated/prisma/enums';
 import { CaptchaService } from '../../common/captcha/captcha.service';
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { EnvVars } from '../../config/env.validation';
 import { PrismaService } from '../../prisma/prisma.service';
+import { BlockedIdentitiesService } from '../admin/blocked-identities.service';
 import { AuditService } from '../audit/audit.service';
 import { AvailabilityService } from '../catalog/availability.service';
 import { isBlackedOut, isOnSale } from '../catalog/pricing';
@@ -34,6 +39,7 @@ import {
   CreatePublicBookingDto,
   CustomerInputDto,
   PassengerInputDto,
+  StaffQuoteDto,
 } from './dto/booking.dto';
 import { links } from './links';
 import { BookingViewService } from './booking-view.service';
@@ -69,6 +75,7 @@ interface NewBooking {
   notes?: string;
   locale: string;
   attribution?: Prisma.InputJsonValue;
+  anonymousId?: string;
   createdByUserId?: string;
 }
 
@@ -83,6 +90,7 @@ export class BookingCreationService {
     private readonly audit: AuditService,
     private readonly idempotency: IdempotencyService,
     private readonly captcha: CaptchaService,
+    private readonly blocked: BlockedIdentitiesService,
     private readonly access: BookingAccessService,
     private readonly notifications: NotificationsService,
     private readonly view: BookingViewService,
@@ -96,6 +104,10 @@ export class BookingCreationService {
     ctx: { ip?: string; userAgent?: string; idempotencyKey?: string },
     now = new Date(),
   ) {
+    await this.blocked.assertAllowed({
+      email: dto.customer.email,
+      ip: ctx.ip,
+    });
     // Un reintento con la misma clave no vuelve a pedir el captcha (el token es de un solo uso).
     const retry =
       ctx.idempotencyKey !== undefined &&
@@ -206,6 +218,7 @@ export class BookingCreationService {
           notes: dto.notes,
           locale,
           attribution: dto.attribution ? toJson(dto.attribution) : undefined,
+          anonymousId: dto.anonymousId,
         });
 
         // El bloqueo pasa a ser la ventana de pago de la reserva.
@@ -253,7 +266,6 @@ export class BookingCreationService {
           body: {
             // Solo lo que no es secreto ni cambia: la vista se arma al responder.
             reference: booking.reference,
-            paymentOptions: this.paymentOptions(dto.currency, dto.paymentKind),
           },
         };
       },
@@ -274,24 +286,93 @@ export class BookingCreationService {
     } else {
       await this.sendCreatedEmail(bookingId, accessToken!);
     }
+    const view = await this.view.toPublicById(found.id);
     return {
       status: result.status,
       body: {
-        booking: await this.view.toPublicById(found.id),
-        paymentOptions: result.body.paymentOptions,
+        booking: view,
+        paymentOptions: view.paymentOptions,
         accessToken: accessToken!,
       },
     };
   }
 
-  private paymentOptions(currency: Currency, kind: 'FULL' | 'DEPOSIT') {
-    return [
-      ...(currency === 'USD' ? [{ provider: 'STRIPE', kinds: [kind] }] : []),
-      { provider: 'CULQI', kinds: [kind] },
-    ];
-  }
-
   // ------------------------------------------------------------- Manual
+
+  /**
+   * Cotización de una reserva manual: mismas reglas que `createManual` (no
+   * exige que la salida esté a la venta), con precio acordado opcional.
+   */
+  async staffQuote(
+    dto: StaffQuoteDto,
+    actor: { permissions: ReadonlySet<string> },
+  ) {
+    if (
+      dto.overrideTotalCents !== undefined &&
+      !actor.permissions.has('bookings:override')
+    ) {
+      throw new ForbiddenException({
+        message: 'Missing permission',
+        details: { required: ['bookings:override'] },
+      });
+    }
+    const departure = await this.prisma.departure.findUnique({
+      where: { id: dto.departureId },
+      include: { tourRef: { include: { cancellationPolicy: true } } },
+    });
+    if (!departure) {
+      throw new UnprocessableEntityException('Unknown departureId');
+    }
+    if (departure.status === 'CANCELLED' || departure.status === 'COMPLETED') {
+      throw new UnprocessableEntityException(
+        `Departure is ${departure.status}`,
+      );
+    }
+    const children = dto.children ?? 0;
+    const people = dto.adults + children;
+    const counts = (await this.seats.countFor([departure.id])).get(
+      departure.id,
+    )!;
+    if (people > departure.capacity - counts.sold - counts.held) {
+      throw new UnprocessableEntityException('Not enough seats left');
+    }
+
+    let priced: ReturnType<typeof priceBooking> | null = null;
+    try {
+      const { rule } = await this.availability.priceFor(
+        departure,
+        dto.currency,
+        people,
+      );
+      priced = priceBooking(rule, dto.adults, children);
+    } catch (error) {
+      // Sin regla solo se cotiza con precio acordado.
+      if (dto.overrideTotalCents === undefined) throw error;
+    }
+    const totalCents = dto.overrideTotalCents ?? priced!.totalCents;
+    const lines =
+      dto.overrideTotalCents === undefined
+        ? priced!.lines
+        : [
+            {
+              label: 'agreed',
+              quantity: 1,
+              unitCents: totalCents,
+              totalCents,
+            },
+          ];
+    const depositPercent = await this.settings.getNumber('depositPercent');
+    const policy = departure.tourRef.cancellationPolicy;
+    return {
+      currency: dto.currency,
+      totalCents,
+      depositCents: computeDeposit(totalCents, depositPercent),
+      lines,
+      cancellationTiers: policy
+        ? (policy.tiers as unknown as CancellationTier[])
+        : [],
+    };
+  }
 
   async createManual(
     dto: CreateManualBookingDto,
@@ -486,6 +567,7 @@ export class BookingCreationService {
         notes: p.notes ?? null,
         billing: p.billing,
         attribution: p.attribution,
+        anonymousId: p.anonymousId ?? null,
         createdByUserId: p.createdByUserId ?? null,
       },
     });
@@ -510,6 +592,8 @@ export class BookingCreationService {
       passengerIds.push(created.id);
     }
     if (p.tourRef.requiresWaiver) {
+      // Cada descargo apunta al snapshot del texto vigente: es lo que el pasajero firmará.
+      const waiverText = await this.legal.waiverFor(tx, p.tourRef.id, p.locale);
       // Un descargo por pasajero registrado; el resto de asientos, descargos sin nombre.
       const seats = p.adults + p.children;
       while (passengerIds.length < seats) passengerIds.push(null);
@@ -519,7 +603,8 @@ export class BookingCreationService {
           bookingId: booking.id,
           passengerId,
           tourRefId: p.tourRef.id,
-          version: 1,
+          version: waiverText.version,
+          legalDocumentId: waiverText.id,
         })),
       });
     }

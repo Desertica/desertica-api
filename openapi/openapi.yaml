@@ -31,6 +31,8 @@ info:
     `desertica_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/auth`). El backoffice y el API deben
     estar en el mismo sitio (subdominios del mismo dominio) y el API acepta CORS con credenciales solo desde
     los orígenes configurados. El refresh rota en cada uso y reutilizar uno viejo revoca todas las sesiones.
+    Como `SameSite=Strict` deja pasar a los subdominios del mismo sitio, `/auth/refresh` y `/auth/logout`
+    responden 403 si el navegador declara un `Origin` que no está en `CORS_ORIGINS`.
 
     ## Enlaces de los correos
     Se arman sobre `PUBLIC_WEB_URL`: acceso a la reserva `/booking/{reference}?token=<accessToken>`,
@@ -159,7 +161,11 @@ paths:
       operationId: createHold
       tags: [Public]
       summary: Bloquear cupo temporalmente
-      description: Reserva los asientos durante unos minutos mientras el cliente completa el pago.
+      description: |
+        Reserva los asientos durante unos minutos mientras el cliente completa el pago. Responde 429 si la IP
+        ya pidió demasiados bloqueos o si la salida ya tiene el máximo de bloqueos vigentes
+        (`maxActiveHoldsPerDeparture`, 10 por defecto): en ese caso `details.reason` es `TOO_MANY_HOLDS` y
+        `details.retryAfterSeconds` dice cuándo se libera el primero.
       security: []
       requestBody:
         required: true
@@ -791,9 +797,16 @@ paths:
       tags: [Catalog]
       summary: Cancelar una salida por decisión de la empresa
       description: |
-        Aplica a todas las reservas confirmadas de la salida. Con `resolution = REFUND` reembolsa el 100 %
-        y emite notas de crédito; con `RESCHEDULE` mueve las reservas a `targetDepartureId`. Notifica
-        a los clientes.
+        Cierra la salida y libera sus bloqueos de cupo. Según `resolution`:
+        - `REFUND`: cancela las reservas vigentes (pendientes de pago y confirmadas) y registra el reembolso
+          del 100 % de lo cobrado como filas `Refund` en `PENDING`; la ejecución del reembolso y las notas de
+          crédito son de las operaciones de pagos y comprobantes.
+        - `RESCHEDULE`: mueve las reservas vigentes a `targetDepartureId` (mismo tour, abierta, con cupo para
+          todas) conservando su precio; no cobra ni reembolsa diferencias.
+        - `CLIENT_CHOICE`: deja las reservas como están y avisa a los clientes para que elijan; el staff las
+          resuelve después con `cancelBooking` o `rescheduleBooking`.
+        Notifica a los clientes. Se procesa de forma síncrona; la respuesta es 202 porque los correos salen
+        aparte. Una salida ya cancelada o completada responde 409.
       x-permission: departures:cancel
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -807,8 +820,14 @@ paths:
               properties:
                 reason: { type: string }
                 resolution: { type: string, enum: [REFUND, RESCHEDULE, CLIENT_CHOICE] }
-                targetDepartureId: { type: string, format: uuid }
+                targetDepartureId:
+                  type: string
+                  format: uuid
+                  description: Obligatorio con `RESCHEDULE`; no se admite con las demás resoluciones.
       responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
         '202':
           description: Cancelación en proceso
           content:
@@ -1119,6 +1138,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CancellationQuote' }
         '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /bookings/{id}/cancel:
     post:
       operationId: cancelBooking
@@ -1681,11 +1701,19 @@ paths:
       operationId: eraseCustomer
       tags: [Customers]
       summary: Atender un pedido de eliminación de datos (ARCO)
-      description: Anonimiza lo que no deba conservarse por obligación legal (comprobantes).
+      description: |
+        Anonimiza al cliente y los datos personales de sus reservas (pasajeros, notas, descargos, avisos
+        enviados, tokens de acceso y respuestas idempotentes guardadas). Se conserva lo que la ley obliga a
+        guardar: los comprobantes electrónicos y sus datos de receptor, y los reclamos del Libro de
+        Reclamaciones. La auditoría es inmutable y solo guarda conteos. Es idempotente: repetirlo sobre un
+        cliente ya anonimizado responde 204. Responde 409 si el cliente tiene reservas vigentes de salidas
+        futuras, reembolsos pendientes o disputas abiertas.
       x-permission: customers:erase
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '204': { description: Procesado }
 
   # -------------------------------------------------------------- Compliance
@@ -1792,9 +1820,15 @@ paths:
       tags: [Compliance]
       summary: Publicar una nueva versión de un documento legal
       description: |
-        Trae la página `cmsSlug` del CMS en el idioma `locale` y guarda un snapshot inmutable de su texto
-        (un trigger de la base impide modificarlo o borrarlo). La versión es la siguiente de `(kind, locale)`.
-        Responde 422 si el CMS no tiene esa página y 503 si el CMS no responde.
+        Guarda un snapshot inmutable del texto del CMS en el idioma `locale` (un trigger de la base impide
+        modificarlo o borrarlo).
+        - Documentos globales (`TERMS`, `PRIVACY`, `CANCELLATION`, `COOKIES`, `CONDUCT`): la página
+          `cmsSlug`; la versión es la siguiente de `(kind, locale)`.
+        - `WAIVER`: el campo `waiverBody` del tour `tourRefId` en ese idioma (no lleva `cmsSlug`); la versión
+          es la siguiente de `(tour, locale)` y la respuesta trae el slug del tour en `cmsSlug`. Los
+          descargos de las reservas nuevas apuntan a la última versión publicada (la del idioma de la reserva
+          o, si no hay, la de `en`); sin ninguna, el tour no se puede reservar (409).
+        Responde 422 si el CMS no tiene esa página, ese tour o su `waiverBody`, y 503 si el CMS no responde.
       x-permission: legal:write
       requestBody:
         required: true
@@ -1802,17 +1836,51 @@ paths:
           application/json:
             schema:
               type: object
-              required: [kind, locale, cmsSlug]
+              required: [kind, locale]
               properties:
                 kind: { $ref: '#/components/schemas/LegalDocumentKind' }
                 locale: { type: string }
-                cmsSlug: { type: string }
+                cmsSlug: { type: string, description: Obligatorio salvo con `WAIVER`. }
+                tourRefId: { type: string, format: uuid, description: Obligatorio con `WAIVER` y no admitido con los demás. }
       responses:
+        '422': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
         '201':
           description: Versión publicada
           content:
             application/json:
               schema: { $ref: '#/components/schemas/LegalDocument' }
+    get:
+      operationId: listLegalDocuments
+      tags: [Compliance]
+      summary: Listar las versiones publicadas de los documentos legales
+      description: Las más recientes primero. El texto no se devuelve (ver `LegalDocument`).
+      x-permission: catalog:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: kind
+          in: query
+          schema: { $ref: '#/components/schemas/LegalDocumentKind' }
+        - name: locale
+          in: query
+          schema: { type: string }
+        - name: tourRefId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Versiones
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LegalDocument' }
+                  meta: { $ref: '#/components/schemas/Meta' }
 
   # ------------------------------------------------------------------- Admin
   /users:
@@ -1906,6 +1974,7 @@ paths:
       summary: Datos fiscales de la empresa emisora
       x-permission: company:read
       responses:
+        '404': { $ref: '#/components/responses/Error' }
         '200':
           description: Empresa
           content:
@@ -1915,7 +1984,11 @@ paths:
       operationId: saveCompany
       tags: [Admin]
       summary: Guardar los datos fiscales de la empresa
-      description: El certificado digital y las credenciales SOL no pasan por este API; viven en `desertica-billing`.
+      description: |
+        Crea la empresa emisora la primera vez y la actualiza después (hay una sola). `igvRate` y
+        `environment` solo cambian si se envían; `tradeName` y `ubigeo` se reemplazan. Con `environment =
+        PRODUCTION` el RUC debe pasar el dígito verificador. El certificado digital y las credenciales SOL
+        no pasan por este API; viven en `desertica-billing`.
       x-permission: company:write
       requestBody:
         required: true
@@ -1923,6 +1996,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/CompanyInput' }
       responses:
+        '422': { $ref: '#/components/responses/Error' }
         '200':
           description: Empresa
           content:
@@ -1950,6 +2024,7 @@ paths:
       operationId: createSeries
       tags: [Admin]
       summary: Crear una serie
+      description: Requiere que la empresa esté configurada (409 si no) y que el prefijo no exista (409).
       x-permission: company:write
       requestBody:
         required: true
@@ -1961,8 +2036,10 @@ paths:
               properties:
                 docType: { $ref: '#/components/schemas/DocumentType' }
                 prefix: { type: string, pattern: '^[BFE][A-Z0-9]{3}$' }
-                nextNumber: { type: integer, minimum: 1, default: 1 }
+                nextNumber: { type: integer, minimum: 1, maximum: 99999999, default: 1 }
       responses:
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
         '201':
           description: Serie
           content:
@@ -2020,6 +2097,10 @@ paths:
       operationId: createBlockedIdentity
       tags: [Admin]
       summary: Bloquear un correo o una IP
+      description: |
+        El correo se normaliza a minúsculas y la IP a su forma canónica. Un bloqueo impide crear bloqueos de
+        cupo y reservas desde el sitio (IP y correo) y enviar reclamos (IP y correo); responde 403 sin decir
+        el motivo. No afecta a las reservas manuales del staff.
       x-permission: fraud:write
       requestBody:
         required: true
@@ -2030,14 +2111,76 @@ paths:
               required: [kind, value]
               properties:
                 kind: { type: string, enum: [EMAIL, IP] }
-                value: { type: string }
-                reason: { type: string }
+                value: { type: string, maxLength: 254 }
+                reason: { type: string, maxLength: 300 }
       responses:
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
         '201':
           description: Bloqueo
           content:
             application/json:
               schema: { $ref: '#/components/schemas/BlockedIdentity' }
+  /blocked-identities/{id}:
+    delete:
+      operationId: deleteBlockedIdentity
+      tags: [Admin]
+      summary: Quitar un bloqueo
+      x-permission: fraud:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '204': { description: Bloqueo quitado }
+  /contact-messages:
+    get:
+      operationId: listContactMessages
+      tags: [Admin]
+      summary: Listar los mensajes del formulario de contacto
+      x-permission: customers:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: handled
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: Mensajes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/ContactMessage' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /contact-messages/{id}:
+    patch:
+      operationId: updateContactMessage
+      tags: [Admin]
+      summary: Marcar un mensaje como atendido o pendiente
+      x-permission: customers:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [handled]
+              properties:
+                handled: { type: boolean }
+      responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '200':
+          description: Mensaje
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContactMessage' }
   /audit-logs:
     get:
       operationId: listAuditLogs
@@ -2073,6 +2216,15 @@ paths:
       operationId: getDashboardSummary
       tags: [Reports]
       summary: Resumen del panel (ventas, ocupación y pendientes)
+      description: |
+        `from` y `to` son fechas de Lima, ambas incluidas (máximo 366 días; `to` no anterior a `from`).
+        - `sales`: por moneda, lo cobrado (pagos exitosos, parcial o totalmente reembolsados y en disputa,
+          por fecha de pago), lo reembolsado (reembolsos exitosos por fecha de actualización) y las
+          reservas distintas con cobro en el rango.
+        - `occupancy`: asientos vendidos y capacidad de las salidas del rango que no están canceladas.
+        - `pending`: estado actual, sin depender del rango. `complaintsDueSoon` cuenta los reclamos sin
+          responder que vencen en los próximos 3 días o ya vencieron; `waiversPending`, descargos sin firmar
+          de reservas vigentes de salidas futuras.
       x-permission: reports:read
       parameters:
         - name: from
@@ -2084,6 +2236,7 @@ paths:
           required: true
           schema: { type: string, format: date }
       responses:
+        '422': { $ref: '#/components/responses/Error' }
         '200':
           description: Resumen
           content:
@@ -2094,6 +2247,12 @@ paths:
       operationId: getSalesReport
       tags: [Reports]
       summary: Reporte de ventas
+      description: |
+        Mismas medidas que `sales` del panel, agrupadas por `groupBy`: `day` (fecha de Lima), `tour` (slug
+        del tour) o `provider` (`STRIPE`, `CULQI` o `MANUAL`). Con `format=csv` devuelve el mismo contenido
+        como `text/csv` (columnas `key,currency,grossCents,refundedCents,bookings`); las celdas que
+        empezarían con `=`, `+`, `-`, `@`, tabulación o retorno se prefijan con `'` para que una hoja de
+        cálculo no las evalúe como fórmula.
       x-permission: reports:read
       parameters:
         - name: from
@@ -2111,6 +2270,7 @@ paths:
           in: query
           schema: { type: string, enum: [json, csv], default: json }
       responses:
+        '422': { $ref: '#/components/responses/Error' }
         '200':
           description: Reporte
           content:
@@ -2263,7 +2423,7 @@ components:
       enum: [OPEN, IN_PROGRESS, ANSWERED]
     LegalDocumentKind:
       type: string
-      enum: [TERMS, PRIVACY, CANCELLATION, COOKIES, CONDUCT]
+      enum: [TERMS, PRIVACY, CANCELLATION, COOKIES, CONDUCT, WAIVER]
 
     # ---------------------------------------------------------- Catálogo
     TourRef:
@@ -2858,7 +3018,8 @@ components:
         id: { type: string, format: uuid }
         bookingId: { type: string, format: uuid }
         passengerId: { type: [string, 'null'], format: uuid }
-        version: { type: integer }
+        version: { type: integer, description: Versión del texto del descargo; es la de `legalDocumentId`. }
+        legalDocumentId: { type: [string, 'null'], format: uuid, description: Snapshot inmutable del texto que se firma (nulo solo en descargos anteriores a su versionado). }
         status: { $ref: '#/components/schemas/WaiverStatus' }
         signerName: { type: [string, 'null'] }
         signedAt: { type: [string, 'null'], format: date-time }
@@ -2869,6 +3030,10 @@ components:
       properties:
         status: { $ref: '#/components/schemas/WaiverStatus' }
         version: { type: integer }
+        locale: { type: [string, 'null'], description: Idioma del texto que se firma. }
+        title: { type: [string, 'null'], description: Título del snapshot. }
+        body: { type: [string, 'null'], description: 'Texto del descargo (Markdown) tal como se guardó al publicarlo; es lo que el pasajero firma, no lo que diga hoy el CMS.' }
+        contentHash: { type: [string, 'null'], description: SHA-256 (hex) de título y texto. }
         tourSlug: { type: string }
         startsAt: { type: string, format: date-time }
         passengerName: { type: [string, 'null'] }
@@ -2888,7 +3053,8 @@ components:
         kind: { $ref: '#/components/schemas/LegalDocumentKind' }
         locale: { type: string }
         version: { type: integer }
-        cmsSlug: { type: string }
+        cmsSlug: { type: string, description: 'Slug de la página en el CMS; con `WAIVER`, el del tour.' }
+        tourRefId: { type: [string, 'null'], format: uuid, description: Solo con `WAIVER`. }
         publishedAt: { type: string, format: date-time }
     CreateComplaint:
       type: object
@@ -2987,6 +3153,19 @@ components:
         value: { type: string }
         reason: { type: [string, 'null'] }
         createdAt: { type: string, format: date-time }
+    ContactMessage:
+      type: object
+      required: [id, name, email, message, handled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        whatsapp: { type: [string, 'null'] }
+        country: { type: [string, 'null'] }
+        message: { type: string }
+        locale: { type: [string, 'null'] }
+        handled: { type: boolean }
+        createdAt: { type: string, format: date-time }
     AuditLog:
       type: object
       required: [id, action, entity, entityId, createdAt]
@@ -3028,6 +3207,7 @@ components:
       properties:
         depositPercent: { type: integer, minimum: 0, maximum: 100, default: 30, description: Porcentaje del total que se cobra como depósito. }
         holdMinutes: { type: integer, minimum: 1, maximum: 120, default: 15, description: Duración del bloqueo de cupo. }
+        maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100, default: 10, description: Bloqueos de cupo vigentes (sin reserva) que admite una salida a la vez; pasado el tope `createHold` responde 429. }
         operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
       additionalProperties: true
@@ -3036,6 +3216,7 @@ components:
       properties:
         depositPercent: { type: integer, minimum: 0, maximum: 100 }
         holdMinutes: { type: integer, minimum: 1, maximum: 120 }
+        maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100 }
         operatorRefundLimitCents: { type: integer, minimum: 0 }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60 }
       additionalProperties: true

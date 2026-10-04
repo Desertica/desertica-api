@@ -639,5 +639,21 @@ describe('Catálogo (e2e)', () => {
         .send({ depositPercent: 30 })
         .expect(200);
     });
+
+    it('accepts extra flat keys but not nested values, odd keys or floods', async () => {
+      const put = (body: Body) =>
+        http().put('/api/settings').set(admin.auth).send(body);
+      const ok = await put({ supportPhone: '+51 999 000 111' }).expect(200);
+      expect((ok.body as Body).supportPhone).toBe('+51 999 000 111');
+      await put({ nested: { a: 1 } }).expect(422);
+      await put({ list: [1] }).expect(422);
+      await put({ 'bad key!': 1 }).expect(422);
+      await put({ long: 'x'.repeat(2001) }).expect(422);
+      await put({ depositPercent: 12.5 }).expect(422);
+      await put({ holdMinutes: 0 }).expect(422);
+      await put(
+        Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`k${i}`, i])),
+      ).expect(422);
+    });
   });
 });

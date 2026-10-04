@@ -30,7 +30,7 @@ export const envSchema = Joi.object({
       .default('http://localhost:4200,http://localhost:4300'),
   }),
   /** Saltos de proxy confiables para resolver la IP real (0 = ninguno). */
-  TRUST_PROXY: Joi.number().integer().min(0).default(0),
+  TRUST_PROXY: Joi.number().integer().min(0).max(10).default(0),
   /** Límite global por IP: peticiones por ventana. */
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(120),
   THROTTLE_TTL_MS: Joi.number().integer().min(1000).default(60_000),
@@ -62,6 +62,10 @@ export const envSchema = Joi.object({
     }),
   JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(60).default(900),
   REFRESH_TTL_DAYS: Joi.number().integer().min(1).default(30),
+  /** Atributo `Secure` de la cookie del refresh token. Solo se puede apagar fuera de producción (HTTP local). */
+  REFRESH_COOKIE_SECURE: Joi.boolean()
+    .default(true)
+    .when('NODE_ENV', { is: 'production', then: Joi.valid(true) }),
   /** Solo desarrollo y pruebas: acepta un ID token falso con este prefijo. */
   AUTH_ALLOW_FAKE_GOOGLE: Joi.boolean()
     .default(false)
@@ -75,6 +79,47 @@ export const envSchema = Joi.object({
   }),
   /** Destino de los avisos internos (contacto, reclamos). Opcional. */
   STAFF_NOTIFY_EMAIL: Joi.string().email().allow('').default(''),
+  /**
+   * Correo saliente. `log` solo escribe en el log (desarrollo y pruebas; muestra los enlaces con
+   * tokens); producción exige `smtp`.
+   */
+  MAIL_DRIVER: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.valid('smtp').required(),
+    otherwise: Joi.valid('log', 'smtp').default('log'),
+  }),
+  /** Servidor SMTP; con Google Workspace, `smtp-relay.gmail.com` (587, STARTTLS) o `smtp.gmail.com`. */
+  SMTP_HOST: Joi.string()
+    .hostname()
+    .when('MAIL_DRIVER', {
+      is: 'smtp',
+      then: Joi.required(),
+      otherwise: Joi.allow('').default(''),
+    }),
+  SMTP_PORT: Joi.number().port().default(587),
+  /** TLS implícito (puerto 465). En 587 se deja en `false` y se usa STARTTLS. */
+  SMTP_SECURE: Joi.boolean().default(false),
+  /** Exige STARTTLS cuando no hay TLS implícito. Solo se apaga en desarrollo (p. ej. Mailpit). */
+  SMTP_REQUIRE_TLS: Joi.boolean()
+    .default(true)
+    .when('NODE_ENV', { is: 'production', then: Joi.valid(true) }),
+  /** Credenciales opcionales (el relay de Google puede autorizar por IP). Van juntas. */
+  SMTP_USER: Joi.string().allow('').default(''),
+  SMTP_PASSWORD: Joi.string()
+    .allow('')
+    .default('')
+    .when('SMTP_USER', {
+      is: Joi.string().min(1),
+      then: Joi.string().min(1).required(),
+    }),
+  /** Remitente, p. ej. `Desértica <reservas@desertica.pe>`. */
+  MAIL_FROM: Joi.string().when('MAIL_DRIVER', {
+    is: 'smtp',
+    then: Joi.required(),
+    otherwise: Joi.allow('').default(''),
+  }),
+  /** Dirección a la que responden los clientes (opcional). */
+  MAIL_REPLY_TO: Joi.string().email().allow('').default(''),
   /** Minutos para pagar una reserva web antes de que se libere el cupo. */
   PAYMENT_WINDOW_MINUTES: Joi.number().integer().min(5).max(1440).default(30),
   /** Cada cuántos segundos corre el barrido de bloqueos vencidos (0 = apagado). */
@@ -102,9 +147,19 @@ export interface EnvVars {
   JWT_ACCESS_SECRET: string;
   JWT_ACCESS_TTL_SECONDS: number;
   REFRESH_TTL_DAYS: number;
+  REFRESH_COOKIE_SECURE: boolean;
   AUTH_ALLOW_FAKE_GOOGLE: boolean;
   TURNSTILE_SECRET_KEY: string;
   STAFF_NOTIFY_EMAIL: string;
+  MAIL_DRIVER: 'log' | 'smtp';
+  SMTP_HOST: string;
+  SMTP_PORT: number;
+  SMTP_SECURE: boolean;
+  SMTP_REQUIRE_TLS: boolean;
+  SMTP_USER: string;
+  SMTP_PASSWORD: string;
+  MAIL_FROM: string;
+  MAIL_REPLY_TO: string;
   PAYMENT_WINDOW_MINUTES: number;
   EXPIRY_SWEEP_SECONDS: number;
   CMS_URL: string;

@@ -147,6 +147,8 @@ enum LegalDocumentKind {
   CANCELLATION
   COOKIES
   CONDUCT
+  /// Descargo de responsabilidad de un tour (uno por tour e idioma).
+  WAIVER
 }
 
 enum WaiverStatus {
@@ -232,6 +234,8 @@ model Customer {
   idDocType   IdDocType?
   idDocNumber String?
   locale      String       @default("es")
+  /// Cuándo se anonimizó por un pedido ARCO (los datos personales ya no existen).
+  erasedAt    DateTime?
   bookings    Booking[]
   acceptances Acceptance[]
   createdAt   DateTime     @default(now())
@@ -280,6 +284,7 @@ model TourRef {
   priceRules           PriceRule[]
   blackouts            Blackout[]
   waivers              Waiver[]
+  legalDocuments       LegalDocument[]
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
 }
@@ -394,6 +399,8 @@ model Booking {
   billing              Json
   /// UTM, gclid, fbclid y landing de la primera visita.
   attribution          Json?
+  /// Identificador anónimo del visitante (el del consentimiento de cookies), para eventos desde el servidor.
+  anonymousId          String?
   createdByUserId      String?
   cancelledAt          DateTime?
   cancelReason         String?
@@ -647,7 +654,13 @@ model LegalDocument {
   kind         LegalDocumentKind
   locale       String
   version      Int
-  /// Slug de la página en el CMS de donde se tomó el texto.
+  /// Solo `WAIVER`: el tour al que pertenece el descargo.
+  tourRefId    String?
+  tourRef      TourRef?          @relation(fields: [tourRefId], references: [id], onDelete: Restrict)
+  /// `""` para los documentos globales y el id del tour para un descargo: hace que la versión
+  /// sea única por tour sin depender de `NULL` en el índice único.
+  scopeKey     String            @default("")
+  /// Slug de la página en el CMS de donde se tomó el texto (para `WAIVER`, el slug del tour).
   cmsSlug      String
   /// Título de la página al momento de publicar.
   title        String
@@ -658,8 +671,10 @@ model LegalDocument {
   contentHash  String
   publishedAt  DateTime
   acceptances  Acceptance[]
+  waivers      Waiver[]
 
-  @@unique([kind, locale, version])
+  @@unique([kind, locale, scopeKey, version])
+  @@index([tourRefId])
 }
 
 model Acceptance {
@@ -678,26 +693,30 @@ model Acceptance {
 }
 
 model Waiver {
-  id              String       @id @default(uuid())
-  token           String       @unique
+  id              String         @id @default(uuid())
+  token           String         @unique
   bookingId       String
-  booking         Booking      @relation(fields: [bookingId], references: [id])
+  booking         Booking        @relation(fields: [bookingId], references: [id])
   passengerId     String?
-  passenger       Passenger?   @relation(fields: [passengerId], references: [id])
+  passenger       Passenger?     @relation(fields: [passengerId], references: [id])
   tourRefId       String
-  tourRef         TourRef      @relation(fields: [tourRefId], references: [id])
+  tourRef         TourRef        @relation(fields: [tourRefId], references: [id])
+  /// Versión del texto del descargo; es la de `legalDocument`.
   version         Int
-  status          WaiverStatus @default(PENDING)
+  /// Snapshot inmutable del texto que se firma. Nulo solo en descargos anteriores a su versionado.
+  legalDocumentId String?
+  legalDocument   LegalDocument? @relation(fields: [legalDocumentId], references: [id], onDelete: Restrict)
+  status          WaiverStatus   @default(PENDING)
   signerName      String?
   signerDocType   IdDocType?
   signerDocNumber String?
   /// Responsable que firma por un menor.
-  onBehalfOfMinor Boolean      @default(false)
+  onBehalfOfMinor Boolean        @default(false)
   medicalNotes    String?
   signedAt        DateTime?
   ip              String?
   pdfKey          String?
-  createdAt       DateTime     @default(now())
+  createdAt       DateTime       @default(now())
 
   @@index([bookingId])
 }

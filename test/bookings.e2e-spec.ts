@@ -1,9 +1,11 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { BackgroundQueue } from '../src/common/queue/background-queue';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
+import { SettingsService } from '../src/modules/settings/settings.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import {
   billingBoleta,
@@ -116,6 +118,71 @@ describe('Reservas (e2e)', () => {
       await http().delete(`/api/public/holds/${h.token}`).expect(204);
       await http().delete(`/api/public/holds/${h.token}`).expect(204); // idempotente
       expect(await left()).toBe(5);
+    });
+
+    it('limits the active holds per departure and frees the slot on release or expiry', async () => {
+      const settings = app.get(SettingsService);
+      const original = settings.getNumber.bind(settings);
+      // Solo esta instancia de la app ve el tope bajo: las demás pruebas usan el predeterminado (10).
+      const spy = jest
+        .spyOn(settings, 'getNumber')
+        .mockImplementation((key) =>
+          key === 'maxActiveHoldsPerDeparture'
+            ? Promise.resolve(2)
+            : original(key),
+        );
+      try {
+        const dep = await fx.departure({ capacity: 10 });
+        const first = await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(201);
+        const denied = await hold(dep.id, 1).expect(429);
+        expect((denied.body as Body).details).toMatchObject({
+          reason: 'TOO_MANY_HOLDS',
+          retryAfterSeconds: expect.any(Number),
+        });
+        expect((denied.body as Body).details.retryAfterSeconds).toBeGreaterThan(
+          0,
+        );
+
+        // Otra salida no se ve afectada.
+        const other = await fx.departure({ capacity: 10 });
+        await hold(other.id, 1).expect(201);
+
+        await http()
+          .delete(`/api/public/holds/${(first.body as Body).token}`)
+          .expect(204);
+        await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(429);
+
+        // Un bloqueo vencido deja de contar.
+        await prisma.hold.updateMany({
+          where: { departureId: dep.id },
+          data: { expiresAt: new Date(Date.now() - 1000) },
+        });
+        await hold(dep.id, 1).expect(201);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not count holds that already became bookings', async () => {
+      const settings = app.get(SettingsService);
+      const original = settings.getNumber.bind(settings);
+      const spy = jest
+        .spyOn(settings, 'getNumber')
+        .mockImplementation((key) =>
+          key === 'maxActiveHoldsPerDeparture'
+            ? Promise.resolve(1)
+            : original(key),
+        );
+      try {
+        const dep = await fx.departure({ capacity: 10 });
+        await webBooking(dep.id, { adults: 1 });
+        await hold(dep.id, 1).expect(201);
+        await hold(dep.id, 1).expect(429);
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('rejects unknown, closed and past-cutoff departures', async () => {
@@ -663,6 +730,7 @@ describe('Reservas (e2e)', () => {
         .post('/api/public/bookings/access')
         .send({ reference: a.reference, email: 'otro@example.com' })
         .expect(202);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
@@ -676,6 +744,7 @@ describe('Reservas (e2e)', () => {
           email: email.toUpperCase(),
         })
         .expect(202);
+      await app.get(BackgroundQueue).drain();
       const mail = mailer.sent
         .slice(before)
         .find((m) => m.template === 'booking_access')!;
@@ -701,6 +770,7 @@ describe('Reservas (e2e)', () => {
           .send({ reference: a.reference, email })
           .expect(202);
       }
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
@@ -1835,6 +1905,411 @@ describe('Reservas (e2e)', () => {
           where: { entityId: b.id, action: 'booking.expire' },
         }),
       ).toBe(1);
+    });
+  });
+  // ------------------------------------------------- Contrato reconciliado
+  describe('reconciled contract', () => {
+    let fx: CatalogFixture;
+    beforeAll(async () => {
+      fx = await createCatalog(app);
+    });
+
+    const payFull = (id: string, amountCents = 20000) =>
+      http()
+        .post(`/api/bookings/${id}/payments/manual`)
+        .set(operator.auth)
+        .send({ method: 'CASH', kind: 'FULL', amountCents, currency: 'USD' })
+        .expect(201);
+
+    describe('staff quote', () => {
+      const quote = (body: Body, who = operator) =>
+        http().post('/api/bookings/quote').set(who.auth).send(body);
+
+      it('prices like the public quote, without hitting /bookings/:id', async () => {
+        const dep = await fx.departure();
+        const res = await quote({
+          departureId: dep.id,
+          adults: 2,
+          children: 1,
+          currency: 'USD',
+        }).expect(200);
+        expect(res.body as Body).toMatchObject({
+          currency: 'USD',
+          totalCents: 26000,
+          depositCents: 7800,
+        });
+        expect((res.body as Body).cancellationTiers).toHaveLength(3);
+      });
+
+      it('needs bookings:override for an agreed price', async () => {
+        const dep = await fx.departure();
+        const body = {
+          departureId: dep.id,
+          adults: 2,
+          currency: 'USD',
+          overrideTotalCents: 15000,
+        };
+        await quote(body).expect(403);
+        const res = await quote(body, admin).expect(200);
+        expect(res.body as Body).toMatchObject({
+          totalCents: 15000,
+          depositCents: 4500,
+          lines: [{ label: 'agreed', quantity: 1, totalCents: 15000 }],
+        });
+      });
+
+      it('does not need a price rule when the price is agreed', async () => {
+        const dep = await fx.departure();
+        const body = { departureId: dep.id, adults: 1, currency: 'PEN' };
+        await prisma.priceRule.deleteMany({
+          where: { tourRefId: fx.tour.id, currency: 'PEN' },
+        });
+        await quote(body).expect(422);
+        await quote({ ...body, overrideTotalCents: 9000 }, admin).expect(200);
+        await prisma.priceRule.create({
+          data: {
+            tourRefId: fx.tour.id,
+            currency: 'PEN',
+            adultCents: 36000,
+            childCents: 20000,
+          },
+        });
+      });
+
+      it('rejects unknown, cancelled and full departures and bad input', async () => {
+        const base = { adults: 1, currency: 'USD' };
+        await quote({
+          ...base,
+          departureId: '00000000-0000-4000-8000-000000000000',
+        }).expect(422);
+        const cancelled = await fx.departure();
+        await prisma.departure.update({
+          where: { id: cancelled.id },
+          data: { status: 'CANCELLED' },
+        });
+        await quote({ ...base, departureId: cancelled.id }).expect(422);
+        const small = await fx.departure({ capacity: 1 });
+        await quote({ ...base, adults: 2, departureId: small.id }).expect(422);
+        await quote({ ...base, adults: 0, departureId: small.id }).expect(422);
+        await http().post('/api/bookings/quote').send(base).expect(401);
+      });
+    });
+
+    describe('cancellation quote', () => {
+      const cq = (id: string, refund?: string) =>
+        http()
+          .get(`/api/bookings/${id}/cancellation-quote`)
+          .query(refund ? { refund } : {})
+          .set(operator.auth);
+
+      it.each([
+        [100, 100, 20000],
+        [30, 50, 10000],
+      ])(
+        'quotes the policy tier at %ih (%i%% => %i)',
+        async (hours, percent, cents) => {
+          const dep = await fx.departure({ startsAt: inHours(hours) });
+          const { id } = await webBooking(dep.id);
+          await payFull(id);
+          const res = await cq(id).expect(200);
+          expect(res.body as Body).toMatchObject({
+            currency: 'USD',
+            paidCents: 20000,
+            refundCents: cents,
+            refundPercent: percent,
+            tier: { refundPercent: percent },
+            policyVersion: 1,
+            reason: null,
+          });
+          // Solo calcula: la reserva sigue activa y sin reembolsos.
+          expect(
+            await prisma.refund.count({
+              where: { payment: { bookingId: id } },
+            }),
+          ).toBe(0);
+          const b = await prisma.booking.findUniqueOrThrow({ where: { id } });
+          expect(b.status).toBe('CONFIRMED');
+        },
+      );
+
+      it('explains why nothing is refunded, supports FULL and NONE and matches cancel', async () => {
+        const late = await fx.departure({ startsAt: inHours(3) });
+        const { id } = await webBooking(late.id);
+        await payFull(id);
+        expect((await cq(id).expect(200)).body as Body).toMatchObject({
+          refundCents: 0,
+          refundPercent: 0,
+          reason: 'OUTSIDE_POLICY_WINDOW',
+        });
+        expect((await cq(id, 'FULL').expect(200)).body as Body).toMatchObject({
+          refundCents: 20000,
+          refundPercent: 100,
+          tier: null,
+          reason: null,
+        });
+        expect((await cq(id, 'NONE').expect(200)).body as Body).toMatchObject({
+          refundCents: 0,
+          reason: 'NONE_REQUESTED',
+        });
+        const cancel = await http()
+          .post(`/api/bookings/${id}/cancel`)
+          .set(operator.auth)
+          .send({ reason: 'Prueba', refund: 'POLICY' })
+          .expect(200);
+        expect((cancel.body as Body).refundDueCents).toBe(0);
+      });
+
+      it('reports unpaid bookings, rejects cancelled and unknown ones and bad modes', async () => {
+        const dep = await fx.departure({ startsAt: inHours(100) });
+        const { id } = await webBooking(dep.id);
+        expect((await cq(id).expect(200)).body as Body).toMatchObject({
+          paidCents: 0,
+          refundCents: 0,
+          reason: 'NO_PAYMENTS',
+        });
+        await http()
+          .post(`/api/bookings/${id}/cancel`)
+          .set(operator.auth)
+          .send({ reason: 'x', refund: 'NONE' })
+          .expect(403);
+        await http()
+          .post(`/api/bookings/${id}/cancel`)
+          .set(admin.auth)
+          .send({ reason: 'x', refund: 'NONE' })
+          .expect(200);
+        await cq(id).expect(409);
+        await cq('00000000-0000-4000-8000-000000000000').expect(404);
+        await cq(id, 'ALL').expect(422);
+      });
+    });
+
+    describe('listing filters', () => {
+      it('filters by source, currency, customer, payment and waiver status', async () => {
+        const dep = await fx.departure();
+        const web = await webBooking(dep.id, { currency: 'PEN' });
+        const manual = await http()
+          .post('/api/bookings')
+          .set(operator.auth)
+          .send({
+            departureId: dep.id,
+            currency: 'USD',
+            adults: 1,
+            customer: customerInput(),
+            billing: billingBoleta,
+            sendConfirmation: false,
+          })
+          .expect(201);
+        const manualId = (manual.body as Body).id as string;
+        const customerId = (manual.body as Body).customer.id as string;
+        const ids = async (q: Body) =>
+          (
+            (
+              await http()
+                .get('/api/bookings')
+                .query({ departureId: dep.id, ...q })
+                .set(operator.auth)
+                .expect(200)
+            ).body as { data: Body[] }
+          ).data
+            .map((b) => b.id as string)
+            .sort();
+
+        expect(await ids({ source: 'WEB' })).toEqual([web.id]);
+        expect(await ids({ source: 'MANUAL' })).toEqual([manualId]);
+        expect(await ids({ currency: 'PEN' })).toEqual([web.id]);
+        expect(await ids({ customerId })).toEqual([manualId]);
+        expect(await ids({ paymentStatus: 'UNPAID' })).toHaveLength(2);
+
+        await http()
+          .post(`/api/bookings/${manualId}/payments/manual`)
+          .set(operator.auth)
+          .send({
+            method: 'CASH',
+            kind: 'FULL',
+            amountCents: 3000,
+            currency: 'USD',
+          })
+          .expect(201);
+        expect(await ids({ paymentStatus: 'UNPAID' })).toEqual([web.id]);
+        expect(await ids({ paymentStatus: 'PARTIAL' })).toEqual([manualId]);
+        expect(await ids({ paymentStatus: 'PAID' })).toEqual([]);
+        await http()
+          .post(`/api/bookings/${manualId}/payments/manual`)
+          .set(operator.auth)
+          .send({
+            method: 'CASH',
+            kind: 'BALANCE',
+            amountCents: 7000,
+            currency: 'USD',
+          })
+          .expect(201);
+        expect(await ids({ paymentStatus: 'PAID' })).toEqual([manualId]);
+
+        // El tour del fixture exige descargo: ambas tienen descargos pendientes.
+        expect(await ids({ waiverStatus: 'PENDING' })).toEqual(
+          [web.id, manualId].sort(),
+        );
+        expect(await ids({ waiverStatus: 'SIGNED' })).toEqual([]);
+        await prisma.waiver.updateMany({
+          where: { bookingId: manualId },
+          data: { status: 'SIGNED', signedAt: new Date(), signerName: 'Ana' },
+        });
+        expect(await ids({ waiverStatus: 'SIGNED' })).toEqual([manualId]);
+        expect(await ids({ waiverStatus: 'PENDING' })).toEqual([web.id]);
+
+        for (const bad of [
+          { source: 'PHONE' },
+          { currency: 'EUR' },
+          { customerId: 'nope' },
+          { paymentStatus: 'LATE' },
+          { waiverStatus: 'LATE' },
+        ]) {
+          await http()
+            .get('/api/bookings')
+            .query(bad)
+            .set(operator.auth)
+            .expect(422);
+        }
+      });
+    });
+
+    describe('public booking view', () => {
+      it('carries format, passengers and payment options by currency and balance', async () => {
+        const dep = await fx.departure();
+        const created = await webBooking(dep.id, {
+          currency: 'PEN',
+          paymentKind: 'DEPOSIT',
+          passengers: [
+            { firstName: 'Luis', lastName: 'Rojas' },
+            { firstName: 'Eva', lastName: 'Rojas' },
+          ],
+        });
+        expect(created.body.paymentOptions).toEqual([
+          { provider: 'CULQI', kinds: ['DEPOSIT'] },
+        ]);
+        const view = async () =>
+          (
+            await http()
+              .get(`/api/public/bookings/${created.reference}`)
+              .set('X-Booking-Token', created.token)
+              .expect(200)
+          ).body as Body;
+        await prisma.departure.update({
+          where: { id: dep.id },
+          data: { format: 'PRIVATE' },
+        });
+        const first = await view();
+        expect(first).toMatchObject({
+          format: 'PRIVATE',
+          paymentOptions: [{ provider: 'CULQI', kinds: ['DEPOSIT'] }],
+        });
+        expect(
+          (first.passengers as Body[]).map((p) => p.firstName).sort(),
+        ).toEqual(['Eva', 'Luis']);
+        expect(first.passengers[0]).not.toHaveProperty('idDocNumber');
+
+        await http()
+          .post(`/api/bookings/${created.id}/payments/manual`)
+          .set(operator.auth)
+          .send({
+            method: 'CASH',
+            kind: 'DEPOSIT',
+            amountCents: 20000,
+            currency: 'PEN',
+          })
+          .expect(201);
+        expect((await view()).paymentOptions).toEqual([
+          { provider: 'CULQI', kinds: ['BALANCE'] },
+        ]);
+        await http()
+          .post(`/api/bookings/${created.id}/payments/manual`)
+          .set(operator.auth)
+          .send({
+            method: 'CASH',
+            kind: 'BALANCE',
+            amountCents: 52000,
+            currency: 'PEN',
+          })
+          .expect(201);
+        expect((await view()).paymentOptions).toEqual([]);
+      });
+
+      it('offers Stripe too in USD and nothing once cancelled', async () => {
+        const dep = await fx.departure();
+        const created = await webBooking(dep.id);
+        expect(created.body.paymentOptions).toEqual([
+          { provider: 'STRIPE', kinds: ['FULL'] },
+          { provider: 'CULQI', kinds: ['FULL'] },
+        ]);
+        await http()
+          .post(`/api/bookings/${created.id}/cancel`)
+          .set(operator.auth)
+          .send({ reason: 'x', refund: 'POLICY' })
+          .expect(200);
+        const res = await http()
+          .get(`/api/public/bookings/${created.reference}`)
+          .set('X-Booking-Token', created.token)
+          .expect(200);
+        expect((res.body as Body).paymentOptions).toEqual([]);
+      });
+
+      it('stores the anonymous id and validates its shape', async () => {
+        const dep = await fx.departure();
+        const created = await webBooking(dep.id, {
+          anonymousId: 'anon_0123456789abcdef',
+        });
+        const row = await prisma.booking.findUniqueOrThrow({
+          where: { id: created.id },
+        });
+        expect(row.anonymousId).toBe('anon_0123456789abcdef');
+        const h = await hold(dep.id, 2).expect(201);
+        await http()
+          .post('/api/public/bookings')
+          .send(
+            bookingBody((h.body as Body).token, { anonymousId: 'no spaces!' }),
+          )
+          .expect(422);
+      });
+    });
+
+    describe('tour titles and booking references', () => {
+      it('puts tourSlug and tourTitle on departures, bookings and customers', async () => {
+        const dep = await fx.departure();
+        const { id, body } = await webBooking(dep.id);
+        const title = `Fixture ${fx.tour.slug}`;
+
+        const d = await http()
+          .get(`/api/departures/${dep.id}`)
+          .set(operator.auth)
+          .expect(200);
+        expect(d.body as Body).toMatchObject({
+          tourSlug: fx.tour.slug,
+          tourTitle: title,
+        });
+        const list = await http()
+          .get('/api/departures')
+          .query({ tourRefId: fx.tour.id })
+          .set(operator.auth)
+          .expect(200);
+        expect((list.body as { data: Body[] }).data[0].tourTitle).toBe(title);
+        const manifest = await http()
+          .get(`/api/departures/${dep.id}/manifest`)
+          .set(operator.auth)
+          .expect(200);
+        expect((manifest.body as Body).departure.tourTitle).toBe(title);
+
+        const b = await http()
+          .get(`/api/bookings/${id}`)
+          .set(operator.auth)
+          .expect(200);
+        expect(b.body as Body).toMatchObject({ tourTitle: title });
+        const c = await http()
+          .get(`/api/customers/${(b.body as Body).customer.id}`)
+          .set(operator.auth)
+          .expect(200);
+        expect((c.body as Body).bookings[0].tourTitle).toBe(title);
+        expect(body.booking.reference).toBe((b.body as Body).reference);
+      });
     });
   });
 });

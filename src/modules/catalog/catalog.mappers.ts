@@ -22,11 +22,14 @@ export const toTourRefDto = (t: TourRef) => ({
 });
 
 export const toDepartureDto = (
-  d: Departure,
+  d: Departure & { tourRef: Pick<TourRef, 'slug' | 'title'> },
   counts: { sold: number; held: number } = { sold: 0, held: 0 },
+  titles?: Map<string, string>,
 ) => ({
   id: d.id,
   tourRefId: d.tourRefId,
+  tourSlug: d.tourRef.slug,
+  tourTitle: titles?.get(d.tourRef.slug) ?? d.tourRef.title,
   startsAt: d.startsAt,
   capacity: d.capacity,
   seatsSold: counts.sold,
