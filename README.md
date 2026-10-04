@@ -29,8 +29,8 @@ Servicios locales:
 | Recurso | URL |
 | --- | --- |
 | API | http://localhost:3000/api |
-| Health | http://localhost:3000/health |
-| Ready (Postgres) | http://localhost:3000/health/ready |
+| Health | http://localhost:3000/api/health |
+| Ready (Postgres y Redis si está configurado) | http://localhost:3000/api/health/ready |
 | Swagger | http://localhost:3000/docs |
 
 ## Arquitectura
@@ -103,18 +103,24 @@ Para forzar docs al día en el chat: *usa context7 para NestJS / Prisma / Postgr
 
 ## Variables de entorno
 
-Ver `.env.example`.
+Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.validation.ts`): si falta una obligatoria o tiene un valor inválido, la API no inicia.
 
 | Variable | Descripción |
 | --- | --- |
-| `DATABASE_URL` | Conexión PostgreSQL |
-| `PORT` | Puerto HTTP (default `3000`) |
-| `NODE_ENV` | `development` / `test` / `production` |
+| `DATABASE_URL` | Conexión PostgreSQL (obligatoria) |
+| `REDIS_URL` | Opcional. Sin ella el rate limit y las cachés usan memoria (una sola instancia) |
+| `CORS_ORIGINS` | Orígenes permitidos separados por coma (obligatoria en producción) |
+| `TRUST_PROXY` | Saltos de proxy confiables para leer la IP real |
+| `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
+| `LOG_LEVEL` | Nivel de log (pino, JSON en producción) |
+| `JWT_ACCESS_SECRET`, `GOOGLE_CLIENT_ID`, `ALLOWED_EMAIL_DOMAIN` | Auth del staff |
+| `CMS_URL`, `CMS_API_TOKEN`, `CMS_CACHE_TTL_SECONDS` | Cliente del CMS |
 
 ## Docker
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres            # Postgres
+docker compose --profile redis up -d redis # Redis opcional
 docker build -t desertica-api .
 docker run --rm -p 3000:3000 --env-file .env desertica-api
 ```
