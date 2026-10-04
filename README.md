@@ -46,6 +46,7 @@ src/
     time/lima.ts          America/Lima: fechas locales, meses, días hábiles
     cache/                KeyValueStore (memoria o Redis) y almacén del rate limit
     idempotency/          Idempotency-Key (fila y efecto en la misma transacción)
+    queue/                Cola en memoria para trabajo que no debe retrasar la respuesta
     captcha/, pipes/, pagination/, filters/, logger/
   modules/
     auth/                 Login con Google, JWT, refresh con rotación, guard, permisos
@@ -56,6 +57,8 @@ src/
                           disponibilidad pública y cotización
     bookings/             Bloqueo de cupo, reservas web y manuales, pagos manuales, enlaces de
                           pago, cancelación, reprogramación, vencimientos
+    admin/                Empresa y series, bloqueos de correos e IP, panel y reporte de ventas,
+                          mensajes de contacto
     customers/, compliance/, notifications/
 test/                     e2e contra Postgres; cada respuesta se valida contra openapi.yaml
 prisma/                   schema, migraciones (con triggers de solo inserción) y seed
@@ -73,7 +76,20 @@ Crear un bloqueo (`Hold`), una reserva manual o reprogramar toma `SELECT … FOR
 
 ### Correo
 
-`Mailer` es una interfaz; el driver actual (`LogMailer`) escribe en el log. Los enlaces usan `PUBLIC_WEB_URL` y las rutas de `modules/bookings/links.ts` (`/booking/<ref>?token=`, `/waiver/<token>`, `/pay/<token>`).
+`Mailer` es una interfaz con dos drivers que se eligen con `MAIL_DRIVER`:
+
+- `log` (por defecto fuera de producción): `LogMailer` escribe el correo, con sus enlaces y tokens, en el log. Solo para desarrollo y pruebas.
+- `smtp` (obligatorio en producción): `SmtpMailer` (nodemailer) con `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_REQUIRE_TLS`, `SMTP_USER`/`SMTP_PASSWORD` (opcionales, van juntos) y `MAIL_FROM`. Sirve el relay de Google Workspace: `smtp-relay.gmail.com`, puerto 587 con STARTTLS, autorizando la IP del servidor en la consola de Workspace (o `smtp.gmail.com` con una contraseña de aplicación). Para probar en local, Mailpit en `localhost:1025` con `SMTP_REQUIRE_TLS=false`.
+
+Las plantillas (`modules/notifications/templates/`) describen cada correo como bloques y de ahí salen el texto y el HTML, en español para `es*` y en inglés para el resto según el `locale` de la reserva; los avisos internos van siempre en español. Todo lo que viene de una persona se escapa. Para agregar una plantilla: una función en `booking.ts` o `compliance.ts`, registrarla en `index.ts` y añadir sus datos de ejemplo a `templates.spec.ts` (la prueba falla si falta). Los enlaces usan `PUBLIC_WEB_URL` y las rutas de `modules/bookings/links.ts` (`/booking/<ref>?token=`, `/waiver/<token>`, `/pay/<token>`).
+
+### Descargos de responsabilidad
+
+El texto vive en el CMS (`tour.waiverBody`). `POST /legal-documents` con `kind: WAIVER` y `tourRefId` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
+
+### IP del cliente y trabajo en segundo plano
+
+`req.ip` sale de `X-Forwarded-For` solo hasta `TRUST_PROXY` saltos contados desde el final (2 detrás de Cloudflare y Coolify); con 0 en producción el API avisa al arrancar. "Mi reserva" responde igual de rápido exista o no la reserva porque la búsqueda y el envío van a `BackgroundQueue` (en memoria: un reinicio pierde lo pendiente, el cliente puede volver a pedir el enlace).
 
 ## Prisma 7
 
@@ -126,7 +142,9 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `DATABASE_URL` | Conexión PostgreSQL (obligatoria) |
 | `REDIS_URL` | Opcional. Sin ella el rate limit y las cachés usan memoria (una sola instancia) |
 | `CORS_ORIGINS` | Orígenes permitidos separados por coma (obligatoria en producción) |
-| `TRUST_PROXY` | Saltos de proxy confiables para leer la IP real |
+| `TRUST_PROXY` | Saltos de proxy confiables para leer la IP real (0 a 10) |
+| `REFRESH_COOKIE_SECURE` | Atributo `Secure` de la cookie `desertica_refresh`; solo se puede apagar fuera de producción |
+| `MAIL_DRIVER`, `SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO` | Correo saliente (ver "Correo"); producción exige `smtp` con TLS |
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
 | `LOG_LEVEL` | Nivel de log (pino, JSON en producción) |
 | `JWT_ACCESS_SECRET`, `GOOGLE_CLIENT_ID`, `ALLOWED_EMAIL_DOMAIN` | Auth del staff |
