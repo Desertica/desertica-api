@@ -1,4 +1,5 @@
 import {
+  addBusinessDays,
   addDays,
   limaDate,
   limaMonthRange,
@@ -31,5 +32,20 @@ describe('Lima time helpers', () => {
   it('adds days across month boundaries', () => {
     expect(addDays('2026-10-31', 1)).toBe('2026-11-01');
     expect(addDays('2026-03-01', -1)).toBe('2026-02-28');
+  });
+
+  it('adds business days skipping weekends in Lima', () => {
+    // viernes 2026-10-02 10:00 Lima + 1 hábil = lunes 5-oct.
+    const friday = new Date('2026-10-02T15:00:00Z');
+    expect(addBusinessDays(friday, 1).toISOString()).toBe(
+      '2026-10-05T15:00:00.000Z',
+    );
+    expect(addBusinessDays(friday, 5).toISOString()).toBe(
+      '2026-10-09T15:00:00.000Z',
+    );
+    expect(addBusinessDays(friday, 15).toISOString()).toBe(
+      '2026-10-23T15:00:00.000Z',
+    );
+    expect(addBusinessDays(friday, 0).toISOString()).toBe(friday.toISOString());
   });
 });

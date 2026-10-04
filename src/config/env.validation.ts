@@ -52,12 +52,19 @@ export const envSchema = Joi.object({
     }),
   JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(60).default(900),
   REFRESH_TTL_DAYS: Joi.number().integer().min(1).default(30),
-  /** Sobreescribe el límite por IP de /auth/* (solo pruebas). */
-  AUTH_THROTTLE_LIMIT: Joi.number().integer().min(1).optional(),
   /** Solo desarrollo y pruebas: acepta un ID token falso con este prefijo. */
   AUTH_ALLOW_FAKE_GOOGLE: Joi.boolean()
     .default(false)
     .when('NODE_ENV', { is: 'production', then: Joi.valid(false) }),
+
+  /** Cloudflare Turnstile. Sin clave no se verifica el captcha (desarrollo). */
+  TURNSTILE_SECRET_KEY: Joi.string().allow('').default(''),
+  /** Destino de los avisos internos (contacto, reclamos). Opcional. */
+  STAFF_NOTIFY_EMAIL: Joi.string().email().allow('').default(''),
+  /** Minutos para pagar una reserva web antes de que se libere el cupo. */
+  PAYMENT_WINDOW_MINUTES: Joi.number().integer().min(5).max(1440).default(30),
+  /** Cada cuántos segundos corre el barrido de bloqueos vencidos (0 = apagado). */
+  EXPIRY_SWEEP_SECONDS: Joi.number().integer().min(0).default(60),
 
   // CMS (M3)
   CMS_URL: Joi.string().uri().default('http://localhost:1337'),
@@ -81,8 +88,11 @@ export interface EnvVars {
   JWT_ACCESS_SECRET: string;
   JWT_ACCESS_TTL_SECONDS: number;
   REFRESH_TTL_DAYS: number;
-  AUTH_THROTTLE_LIMIT?: number;
   AUTH_ALLOW_FAKE_GOOGLE: boolean;
+  TURNSTILE_SECRET_KEY: string;
+  STAFF_NOTIFY_EMAIL: string;
+  PAYMENT_WINDOW_MINUTES: number;
+  EXPIRY_SWEEP_SECONDS: number;
   CMS_URL: string;
   CMS_API_TOKEN: string;
   CMS_CACHE_TTL_SECONDS: number;

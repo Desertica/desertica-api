@@ -1,14 +1,6 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Patch,
-  Post,
-  Req,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
+import { UuidPipe } from '../../common/pipes/id-pipes';
 import { CurrentUser, RequirePermission } from '../auth/decorators';
 import type { AuthUser } from '../auth/auth.types';
 import { CreateUserDto, UpdateUserDto } from './dto/user.dto';
@@ -37,7 +29,7 @@ export class UsersController {
   @Patch(':id')
   @RequirePermission('users:write')
   update(
-    @Param('id', ParseUUIDPipe) id: string,
+    @Param('id', UuidPipe) id: string,
     @Body() dto: UpdateUserDto,
     @CurrentUser() actor: AuthUser,
     @Req() req: Request,
