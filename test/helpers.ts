@@ -4,16 +4,34 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/common/configure-app';
+import { CmsClient } from '../src/modules/cms/cms.client';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { ensureSystemRoles } from '../src/modules/roles/system-roles';
 
 export const DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN ?? 'desertica.pe';
 
+/** Páginas del CMS simuladas: `terms`, `privacy` y `cancellation` existen en cualquier idioma. */
+const fakeCms = {
+  listTours: () => Promise.resolve([]),
+  getPage: (slug: string) =>
+    Promise.resolve(
+      ['terms', 'privacy', 'cancellation', 'cookies', 'conduct'].includes(slug)
+        ? {
+            slug,
+            title: `Título ${slug}`,
+            body: `# ${slug}\n\nTexto vigente de ${slug}.`,
+          }
+        : null,
+    ),
+};
+
 export async function createTestApp(
   customize: (builder: TestingModuleBuilder) => TestingModuleBuilder = (b) => b,
 ): Promise<INestApplication<App>> {
   const moduleFixture = await customize(
-    Test.createTestingModule({ imports: [AppModule] }),
+    Test.createTestingModule({ imports: [AppModule] })
+      .overrideProvider(CmsClient)
+      .useValue(fakeCms),
   ).compile();
   const app = moduleFixture.createNestApplication<INestApplication<App>>();
   configureApp(app);

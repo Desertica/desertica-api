@@ -1,3 +1,4 @@
+// Parchea una API interna de supertest (sin tipos).
 import Test from 'supertest/lib/test';
 import { checkConformance } from './conformance';
 
@@ -6,8 +7,10 @@ import { checkConformance } from './conformance';
  * OpenAPI. Se desactiva con CONFORMANCE=off.
  */
 if (process.env.CONFORMANCE !== 'off') {
-  const original = Test.prototype.assert;
-  Test.prototype.assert = function (resError, res, fn) {
+  // `assert` es API interna de supertest (sin tipos).
+  const proto = Test.prototype as any;
+  const original = proto.assert;
+  proto.assert = function (resError: unknown, res: unknown, fn: any) {
     return original.call(
       this,
       resError,
