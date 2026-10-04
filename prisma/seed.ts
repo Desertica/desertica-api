@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client';
+import { ensureSystemRoles } from '../src/modules/roles/system-roles';
 
 const connectionString = process.env.DATABASE_URL;
 
@@ -13,6 +14,22 @@ const prisma = new PrismaClient({
 });
 
 async function main() {
+  await ensureSystemRoles(prisma);
+
+  // Primer administrador: debe pertenecer a ALLOWED_EMAIL_DOMAIN para poder entrar con Google.
+  const adminEmail = (
+    process.env.SEED_ADMIN_EMAIL ??
+    `admin@${process.env.ALLOWED_EMAIL_DOMAIN ?? 'desertica.pe'}`
+  ).toLowerCase();
+  const adminRole = await prisma.role.findUniqueOrThrow({
+    where: { key: 'admin' },
+  });
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: {},
+    create: { email: adminEmail, name: 'Administrador', roleId: adminRole.id },
+  });
+
   const duneSunset = await prisma.tour.upsert({
     where: { slug: 'dunas-al-atardecer' },
     update: {},
