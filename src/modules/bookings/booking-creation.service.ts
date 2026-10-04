@@ -592,6 +592,8 @@ export class BookingCreationService {
       passengerIds.push(created.id);
     }
     if (p.tourRef.requiresWaiver) {
+      // Cada descargo apunta al snapshot del texto vigente: es lo que el pasajero firmará.
+      const waiverText = await this.legal.waiverFor(tx, p.tourRef.id, p.locale);
       // Un descargo por pasajero registrado; el resto de asientos, descargos sin nombre.
       const seats = p.adults + p.children;
       while (passengerIds.length < seats) passengerIds.push(null);
@@ -601,7 +603,8 @@ export class BookingCreationService {
           bookingId: booking.id,
           passengerId,
           tourRefId: p.tourRef.id,
-          version: 1,
+          version: waiverText.version,
+          legalDocumentId: waiverText.id,
         })),
       });
     }

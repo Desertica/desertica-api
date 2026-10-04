@@ -94,6 +94,7 @@ export const toWaiverDto = (w: Waiver) => ({
   bookingId: w.bookingId,
   passengerId: w.passengerId,
   version: w.version,
+  legalDocumentId: w.legalDocumentId,
   status: w.status,
   signerName: w.signerName,
   signedAt: w.signedAt,

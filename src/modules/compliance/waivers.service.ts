@@ -33,6 +33,7 @@ export class WaiversService {
       include: {
         passenger: true,
         tourRef: true,
+        legalDocument: true,
         booking: { include: { departure: true } },
       },
     });
@@ -44,6 +45,11 @@ export class WaiversService {
     return {
       status: w.status,
       version: w.version,
+      // El texto que se firma es el snapshot inmutable al que apunta el descargo.
+      locale: w.legalDocument?.locale ?? null,
+      title: w.legalDocument?.title ?? null,
+      body: w.legalDocument?.textSnapshot ?? null,
+      contentHash: w.legalDocument?.contentHash ?? null,
       tourSlug: w.tourRef.slug,
       startsAt: w.booking.departure.startsAt,
       passengerName: w.passenger

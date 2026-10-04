@@ -13,6 +13,19 @@ export const DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN ?? 'desertica.pe';
 /** Páginas del CMS simuladas: `terms`, `privacy` y `cancellation` existen en cualquier idioma. */
 const fakeCms = {
   listTours: () => Promise.resolve([]),
+  /** Todo tour tiene descargo en cualquier idioma, salvo los slugs `sin-descargo-*` y `sin-tour-*`. */
+  getTourWaiver: (slug: string, locale: string) =>
+    Promise.resolve(
+      slug.startsWith('sin-tour-')
+        ? null
+        : {
+            slug,
+            title: `Tour ${slug} (${locale})`,
+            waiverBody: slug.startsWith('sin-descargo-')
+              ? null
+              : `# Descargo de ${slug}\n\nTexto del descargo en ${locale}.`,
+          },
+    ),
   getPage: (slug: string) =>
     Promise.resolve(
       ['terms', 'privacy', 'cancellation', 'cookies', 'conduct'].includes(slug)
