@@ -86,8 +86,16 @@ export class CustomersService {
           action: 'customer.update',
           entity: 'Customer',
           entityId: id,
-          before: toCustomerDto(before),
-          after: toCustomerDto(updated),
+          // Solo los nombres de los campos: la auditoría es inmutable y no debe guardar datos personales.
+          after: {
+            changed: (
+              Object.keys(toCustomerDto(updated)) as (keyof ReturnType<
+                typeof toCustomerDto
+              >)[]
+            ).filter(
+              (k) => toCustomerDto(before)[k] !== toCustomerDto(updated)[k],
+            ),
+          },
           ip,
         },
         tx,

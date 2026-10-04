@@ -96,7 +96,11 @@ export class BookingCreationService {
     ctx: { ip?: string; userAgent?: string; idempotencyKey?: string },
     now = new Date(),
   ) {
-    await this.captcha.verify(dto.turnstileToken, ctx.ip);
+    // Un reintento con la misma clave no vuelve a pedir el captcha (el token es de un solo uso).
+    const retry =
+      ctx.idempotencyKey !== undefined &&
+      (await this.idempotency.has('createPublicBooking', ctx.idempotencyKey));
+    if (!retry) await this.captcha.verify(dto.turnstileToken, ctx.ip);
     validateBilling(dto.billing);
     const children = dto.children ?? 0;
     const people = dto.adults + children;
@@ -244,23 +248,23 @@ export class BookingCreationService {
         );
         bookingId = booking.id;
 
-        const publicBooking = await this.view.toPublic(tx, booking.id);
         return {
           status: 201,
           body: {
-            booking: publicBooking,
+            // Solo lo que no es secreto ni cambia: la vista se arma al responder.
+            reference: booking.reference,
             paymentOptions: this.paymentOptions(dto.currency, dto.paymentKind),
           },
         };
       },
     );
 
+    const found = await this.prisma.booking.findUniqueOrThrow({
+      where: { reference: result.body.reference },
+      include: { departure: true },
+    });
     if (result.replayed) {
-      // Misma petición repetida: se devuelve la reserva y se emite un acceso nuevo.
-      const found = await this.prisma.booking.findUniqueOrThrow({
-        where: { reference: result.body.booking.reference },
-        include: { departure: true },
-      });
+      // Misma petición repetida: se devuelve la reserva actual y se emite un acceso nuevo.
       bookingId = found.id;
       accessToken = await this.access.issue(
         this.prisma,
@@ -272,7 +276,11 @@ export class BookingCreationService {
     }
     return {
       status: result.status,
-      body: { ...result.body, accessToken: accessToken! },
+      body: {
+        booking: await this.view.toPublicById(found.id),
+        paymentOptions: result.body.paymentOptions,
+        accessToken: accessToken!,
+      },
     };
   }
 
@@ -437,7 +445,12 @@ export class BookingCreationService {
 
   /** Cliente, reserva, pasajeros y descargos pendientes. */
   private async persist(tx: Tx, p: NewBooking) {
-    const customer = await this.upsertCustomer(tx, p.customer, p.locale);
+    const customer = await this.upsertCustomer(
+      tx,
+      p.customer,
+      p.locale,
+      p.source === 'MANUAL',
+    );
     const policy = p.tourRef.cancellationPolicy;
     const cancellationSnapshot = policy
       ? {
@@ -521,6 +534,7 @@ export class BookingCreationService {
     tx: Tx,
     input: CustomerInputDto,
     locale: string,
+    updateExisting: boolean,
   ) {
     const email = normalizeEmail(input.email);
     const existing = await tx.customer.findFirst({
@@ -538,7 +552,10 @@ export class BookingCreationService {
       idDocNumber: input.idDocNumber,
     };
     if (existing) {
-      return tx.customer.update({ where: { id: existing.id }, data: details });
+      // Un anónimo que conoce correo y nombre no debe poder pisar datos guardados.
+      return updateExisting
+        ? tx.customer.update({ where: { id: existing.id }, data: details })
+        : existing;
     }
     return tx.customer.create({
       data: {

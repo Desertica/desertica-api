@@ -44,6 +44,12 @@ export function hashRequest(value: unknown): string {
 export class IdempotencyService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async has(scope: string, key: string): Promise<boolean> {
+    return (
+      (await this.prisma.idempotencyRecord.count({ where: { scope, key } })) > 0
+    );
+  }
+
   async run<T>(
     options: {
       scope: string;

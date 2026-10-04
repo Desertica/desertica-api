@@ -39,7 +39,11 @@ export class SettingsService {
   }
 
   /** Guarda las claves enviadas; las numéricas conocidas se validan por rango. */
-  async save(input: Record<string, unknown>) {
+  async save(
+    input: Record<string, unknown>,
+    audit?: { actorUserId: string; ip?: string },
+  ) {
+    const before = audit ? await this.getAll() : null;
     for (const [key, value] of Object.entries(input)) {
       const def = (
         SETTING_DEFINITIONS as Record<
@@ -59,15 +63,28 @@ export class SettingsService {
         );
       }
     }
-    await this.prisma.$transaction(
-      Object.entries(input).map(([key, value]) =>
-        this.prisma.setting.upsert({
+    await this.prisma.$transaction(async (tx) => {
+      for (const [key, value] of Object.entries(input)) {
+        await tx.setting.upsert({
           where: { key },
           update: { value: value as Prisma.InputJsonValue },
           create: { key, value: value as Prisma.InputJsonValue },
-        }),
-      ),
-    );
+        });
+      }
+      if (audit) {
+        await tx.auditLog.create({
+          data: {
+            actorUserId: audit.actorUserId,
+            action: 'settings.update',
+            entity: 'Setting',
+            entityId: 'all',
+            before: before as Prisma.InputJsonValue,
+            after: JSON.parse(JSON.stringify(input)) as Prisma.InputJsonValue,
+            ip: audit.ip ?? null,
+          },
+        });
+      }
+    });
     return this.getAll();
   }
 }

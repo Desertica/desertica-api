@@ -1,8 +1,16 @@
 import {
   ConflictException,
+  HttpException,
+  HttpStatus,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { CaptchaService } from '../../common/captcha/captcha.service';
+import {
+  KEY_VALUE_STORE,
+  type KeyValueStore,
+} from '../../common/cache/key-value-store';
 import { isBlackedOut, isOnSale } from '../catalog/pricing';
 import { SeatsService } from '../catalog/seats.service';
 import { SettingsService } from '../settings/settings.service';
@@ -15,6 +23,8 @@ export class HoldsService {
     private readonly prisma: PrismaService,
     private readonly seats: SeatsService,
     private readonly settings: SettingsService,
+    private readonly captcha: CaptchaService,
+    @Inject(KEY_VALUE_STORE) private readonly store: KeyValueStore,
   ) {}
 
   /**
@@ -22,7 +32,23 @@ export class HoldsService {
    * lo retenido dentro de la misma transacción y recién entonces inserta: dos
    * peticiones sobre el último cupo se serializan y solo una gana.
    */
-  async create(departureId: string, seatsWanted: number, now = new Date()) {
+  async create(
+    departureId: string,
+    seatsWanted: number,
+    ctx: { ip?: string; turnstileToken?: string } = {},
+    now = new Date(),
+  ) {
+    await this.captcha.verify(ctx.turnstileToken, ctx.ip);
+    // Tope por IP: sin él, un solo cliente podría retener todo el cupo renovando bloqueos.
+    if (ctx.ip) {
+      const hits = await this.store.incr(`holds:ip:${ctx.ip}`, 15 * 60_000);
+      if (hits.value > 8 * Number(process.env.THROTTLE_SCALE ?? 1)) {
+        throw new HttpException(
+          'Too many seat holds from this address',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
     const minutes = await this.settings.getNumber('holdMinutes');
     return this.prisma.$transaction(async (tx) => {
       if (!(await this.seats.lockDeparture(tx, departureId))) {

@@ -39,8 +39,11 @@ export class PublicBookingsController {
 
   @Post('holds')
   @Throttle(rateLimit(10, 60_000))
-  createHold(@Body() dto: CreateHoldDto) {
-    return this.holds.create(dto.departureId, dto.seats);
+  createHold(@Body() dto: CreateHoldDto, @Req() req: Request) {
+    return this.holds.create(dto.departureId, dto.seats, {
+      ip: req.ip,
+      turnstileToken: dto.turnstileToken,
+    });
   }
 
   @Delete('holds/:token')

@@ -45,12 +45,17 @@ describe('Catálogo (e2e)', () => {
       .expect(200);
     expect((first.body as Body).created).toBeGreaterThanOrEqual(2);
 
-    const list = await http()
-      .get('/api/tour-refs')
-      .query({ pageSize: 100 })
-      .set(admin.auth)
-      .expect(200);
-    tourA = (list.body as { data: Body[] }).data.find((t) => t.slug === slugA)!;
+    // La tabla acumula tours de otras pruebas: se pagina hasta encontrarlo.
+    for (let page = 1; !tourA; page++) {
+      const list = await http()
+        .get('/api/tour-refs')
+        .query({ pageSize: 100, page })
+        .set(admin.auth)
+        .expect(200);
+      const rows = (list.body as { data: Body[] }).data;
+      tourA = rows.find((t) => t.slug === slugA)!;
+      if (rows.length === 0) break;
+    }
     expect(tourA).toMatchObject({
       title: 'Tour A',
       durationHours: 2,

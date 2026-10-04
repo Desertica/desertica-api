@@ -403,6 +403,12 @@ export class BookingLifecycleService {
       const diff = priceDifference(booking.totalCents, newTotal);
 
       if (diff.type === 'REFUND') {
+        if (!actor.permissions.has('payments:refund')) {
+          throw new ForbiddenException({
+            message: 'Missing permission',
+            details: { required: ['payments:refund'] },
+          });
+        }
         const net = booking.paidCents - booking.refundedCents;
         const due = Math.min(diff.amountCents, Math.max(0, net - newTotal));
         await this.createPendingRefunds(

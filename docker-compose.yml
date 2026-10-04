@@ -42,6 +42,9 @@ services:
       DATABASE_URL: postgresql://desertica:desertica@postgres:5432/desertica?schema=public
       CORS_ORIGINS: http://localhost:4200,http://localhost:4300
       JWT_ACCESS_SECRET: local-only-secret-local-only-secret-0123456789
+      TURNSTILE_SECRET_KEY: local-only
+      GOOGLE_CLIENT_ID: local-only
+      PUBLIC_WEB_URL: http://localhost:4200
     ports:
       - '3000:3000'
 
