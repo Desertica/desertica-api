@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TourTitlesService } from '../cms/tour-titles.service';
+import { redactEmails } from '../../common/logger/sanitize';
 import { MAILER, type Mailer, MailMessage } from './mailer';
 import { langOf } from './templates/format';
 
@@ -69,7 +70,10 @@ export class NotificationsService {
         data: { status: 'SENT', sentAt: new Date() },
       });
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
+      // El servidor SMTP suele repetir la dirección del destinatario en su respuesta.
+      const text = redactEmails(
+        error instanceof Error ? error.message : String(error),
+      );
       this.logger.error(`Email ${message.template} failed: ${text}`);
       await db.notification.update({
         where: { id: record.id },
