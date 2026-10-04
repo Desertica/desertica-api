@@ -759,21 +759,3 @@ model BlockedIdentity {
 
   @@unique([kind, value])
 }
-
-// ---------------------------------------------------------------------------
-// Obsoleto: se elimina en la Ola 1 cuando `modules/tours` se reemplace por el
-// catálogo que lee el CMS (`TourRef`). No agregar usos nuevos.
-// ---------------------------------------------------------------------------
-
-model Tour {
-  id            String   @id @default(uuid())
-  slug          String   @unique
-  title         String
-  description   String?
-  priceCents    Int
-  currency      String   @default("MXN")
-  durationHours Int
-  isPublished   Boolean  @default(false)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-}

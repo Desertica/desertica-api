@@ -1,5 +1,5 @@
 import { INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import { Test, TestingModuleBuilder } from '@nestjs/testing';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
@@ -9,10 +9,12 @@ import { ensureSystemRoles } from '../src/modules/roles/system-roles';
 
 export const DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN ?? 'desertica.pe';
 
-export async function createTestApp(): Promise<INestApplication<App>> {
-  const moduleFixture = await Test.createTestingModule({
-    imports: [AppModule],
-  }).compile();
+export async function createTestApp(
+  customize: (builder: TestingModuleBuilder) => TestingModuleBuilder = (b) => b,
+): Promise<INestApplication<App>> {
+  const moduleFixture = await customize(
+    Test.createTestingModule({ imports: [AppModule] }),
+  ).compile();
   const app = moduleFixture.createNestApplication<INestApplication<App>>();
   configureApp(app);
   await app.init();

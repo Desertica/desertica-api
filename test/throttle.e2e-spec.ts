@@ -30,9 +30,9 @@ describe('Rate limit (e2e)', () => {
   it('answers 429 in the error shape after the per-IP limit', async () => {
     const server = app.getHttpServer();
     for (let i = 0; i < 3; i++) {
-      await request(server).get('/api/tours').expect(200);
+      await request(server).get('/api/auth/me').expect(401);
     }
-    const res = await request(server).get('/api/tours').expect(429);
+    const res = await request(server).get('/api/auth/me').expect(429);
     const body = res.body as { statusCode: number; error: string };
     expect(body.statusCode).toBe(429);
     expect(typeof body.error).toBe('string');

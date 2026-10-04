@@ -68,38 +68,4 @@ describe('Desértica API (e2e)', () => {
     });
     expect((res.body as { message?: string }).message).toBeDefined();
   });
-
-  it('creates, lists and deletes a tour', async () => {
-    const slug = `tour-e2e-${Date.now()}`;
-
-    const created = await request(app.getHttpServer())
-      .post('/api/tours')
-      .send({
-        slug,
-        title: 'Tour e2e',
-        description: 'Creado por la suite e2e',
-        priceCents: 50000,
-        durationHours: 2,
-        isPublished: false,
-      })
-      .expect(201);
-
-    expect(created.body).toMatchObject({
-      slug,
-      title: 'Tour e2e',
-      priceCents: 50000,
-    });
-
-    const createdBody = created.body as { id: string; slug: string };
-    const list = await request(app.getHttpServer())
-      .get('/api/tours')
-      .expect(200);
-    const tours = list.body as Array<{ slug: string }>;
-
-    expect(tours.some((item) => item.slug === slug)).toBe(true);
-
-    await request(app.getHttpServer())
-      .delete(`/api/tours/${createdBody.id}`)
-      .expect(200);
-  });
 });
