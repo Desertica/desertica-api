@@ -55,9 +55,14 @@ export const toPaymentDto = (p: Payment, bookingReference?: string) => ({
   createdAt: p.createdAt,
 });
 
-export const toDocumentDto = (d: Document & { series: Series }) => ({
+export const toDocumentDto = (
+  d: Document & { series: Series },
+  bookingReference?: string,
+) => ({
   id: d.id,
   bookingId: d.bookingId,
+  bookingReference,
+  customerName: (d.customerSnapshot as { name?: string } | null)?.name ?? '',
   paymentId: d.paymentId,
   docType: d.docType,
   status: d.status,
@@ -67,7 +72,7 @@ export const toDocumentDto = (d: Document & { series: Series }) => ({
   totalCents: d.totalCents,
   taxableCents: d.taxableCents,
   igvCents: d.igvCents,
-  exchangeRate: d.exchangeRate ? d.exchangeRate.toString() : null,
+  exchangeRate: d.exchangeRate ? d.exchangeRate.toFixed(4) : null,
   sunatCode: d.sunatCode,
   sunatMessage: d.sunatMessage,
   relatedDocumentId: d.relatedDocumentId,
@@ -138,7 +143,7 @@ export const toBookingDto = (
   cancelReason: b.cancelReason,
   passengers: b.passengers.map(toPassengerDto),
   payments: b.payments.map((p) => toPaymentDto(p, b.reference)),
-  documents: b.documents.map(toDocumentDto),
+  documents: b.documents.map((d) => toDocumentDto(d, b.reference)),
   waivers: b.waivers.map(toWaiverDto),
 });
 

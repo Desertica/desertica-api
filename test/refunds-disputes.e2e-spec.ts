@@ -5,12 +5,17 @@ import { GatewayRegistry } from '../src/modules/payments/gateway.registry';
 import { FakeGateway } from '../src/modules/payments/providers/fake.gateway';
 import type { GatewayEvent } from '../src/modules/payments/providers/payment-gateway';
 import { RefundSweeper } from '../src/modules/payments/refund-sweeper.service';
-import { StaffAlertsService } from '../src/modules/payments/staff-alerts.service';
+import {
+  DOCUMENT_STORAGE,
+  MemoryDocumentStorage,
+} from '../src/modules/billing/document-storage';
+import { StaffAlertsService } from '../src/modules/alerts/staff-alerts.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { CatalogFixture, createCatalog, rand } from './fixtures';
 import { createTestApp, loginAs, TestSession } from './helpers';
 import {
   DirectBooking,
+  ensureBilling,
   evt,
   makeBooking,
   postWebhook,
@@ -27,6 +32,7 @@ describe('Reembolsos y disputas (e2e)', () => {
   let operator: TestSession;
   let stripe: FakeGateway;
   let fx: CatalogFixture;
+  const storage = new MemoryDocumentStorage();
   const alertLog: { code: string; bookingId?: string }[] = [];
   const http = () => request(app.getHttpServer());
   const alertsFor = (bookingId: string, code: string) =>
@@ -34,12 +40,16 @@ describe('Reembolsos y disputas (e2e)', () => {
 
   beforeAll(async () => {
     app = await createTestApp((b) =>
-      b.overrideProvider(StaffAlertsService).useValue({
-        alert: (code: string, _d: Body, o: { bookingId?: string } = {}) => {
-          alertLog.push({ code, bookingId: o.bookingId });
-          return Promise.resolve();
-        },
-      }),
+      b
+        .overrideProvider(DOCUMENT_STORAGE)
+        .useValue(storage)
+        .overrideProvider(StaffAlertsService)
+        .useValue({
+          alert: (code: string, _d: Body, o: { bookingId?: string } = {}) => {
+            alertLog.push({ code, bookingId: o.bookingId });
+            return Promise.resolve();
+          },
+        }),
     );
     prisma = app.get(PrismaService);
     stripe = app.get(GatewayRegistry).get('STRIPE') as FakeGateway;
@@ -544,7 +554,7 @@ describe('Reembolsos y disputas (e2e)', () => {
           evidenceDueAt: '2026-12-01T00:00:00.000Z',
           ...over,
         },
-      }) as GatewayEvent;
+      }) as unknown as GatewayEvent;
 
     it('opens a dispute from the webhook, marks the payment and alerts the staff', async () => {
       const b = await makeBooking(app, fx);
@@ -772,6 +782,30 @@ describe('Reembolsos y disputas (e2e)', () => {
           bookingId: b.id,
           ip: '203.0.113.7',
           userAgent: 'jest',
+        },
+      });
+      const company = await ensureBilling(app);
+      const series = await prisma.series.findFirstOrThrow({
+        where: { companyId: company.id, docType: 'BOLETA', active: true },
+      });
+      const number = 9_000_000 + Math.floor(Math.random() * 999_999);
+      const pdfKey = `documents/test/${rand()}${rand()}.pdf`;
+      await storage.put(pdfKey, Buffer.from('%PDF-1.4 evidencia'));
+      await prisma.document.create({
+        data: {
+          bookingId: b.id,
+          paymentId: p.id,
+          seriesId: series.id,
+          number,
+          docType: 'BOLETA',
+          status: 'ACCEPTED',
+          currency: 'USD',
+          totalCents: 20000,
+          taxableCents: 16949,
+          igvCents: 3051,
+          customerSnapshot: { name: 'Ana Pérez' },
+          pdfKey,
+          issuedAt: new Date(),
         },
       });
       await prisma.notification.create({

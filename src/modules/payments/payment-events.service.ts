@@ -6,12 +6,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { BookingPaymentsService } from '../bookings/booking-payments.service';
 import { SeatsService } from '../catalog/seats.service';
+import { DocumentsService } from '../documents/documents.service';
 import { GatewayRegistry } from './gateway.registry';
 import type { GatewayEvent, GatewayPayment } from './providers/payment-gateway';
 import { DisputesService } from './disputes.service';
 import { RefundsService } from './refunds-admin.service';
 import { RefundsExecutor } from './refunds.service';
-import { StaffAlertsService } from './staff-alerts.service';
+import { StaffAlertsService } from '../alerts/staff-alerts.service';
 
 type Tx = Prisma.TransactionClient;
 type PaymentRow = Prisma.PaymentGetPayload<object>;
@@ -25,6 +26,8 @@ export interface Effects {
   error?: string;
   paymentId?: string;
   confirmedBookingId?: string;
+  /** Pago que acaba de quedar acreditado (para emitir su comprobante). */
+  settledPaymentId?: string;
   refundIds: string[];
   alerts: { code: string; data: Record<string, unknown>; bookingId?: string }[];
 }
@@ -52,6 +55,7 @@ export class PaymentEventsService {
     private readonly refunds: RefundsExecutor,
     private readonly refundEvents: RefundsService,
     private readonly disputes: DisputesService,
+    private readonly documents: DocumentsService,
   ) {}
 
   /** Punto de entrada del webhook: valida la firma y procesa. */
@@ -289,6 +293,7 @@ export class PaymentEventsService {
     }
 
     await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${payment.bookingId} FOR UPDATE`;
+    fx.settledPaymentId = payment.id;
     const booking = await tx.booking.findUniqueOrThrow({
       where: { id: payment.bookingId },
       include: { departure: true },
@@ -497,5 +502,12 @@ export class PaymentEventsService {
       });
     }
     for (const id of fx.refundIds) await this.refunds.execute(id);
+    if (fx.settledPaymentId) {
+      try {
+        await this.documents.autoIssueForPayment(fx.settledPaymentId);
+      } catch (error) {
+        this.logger.error(`Auto-issue failed: ${String(error)}`);
+      }
+    }
   }
 }

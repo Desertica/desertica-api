@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BookingsModule } from '../bookings/bookings.module';
 import { CatalogModule } from '../catalog/catalog.module';
+import { DocumentsModule } from '../documents/documents.module';
 import { DisputesService } from './disputes.service';
 import { EvidenceService } from './evidence.service';
 import { GatewayRegistry } from './gateway.registry';
@@ -12,11 +13,10 @@ import { PaymentsService } from './payments.service';
 import { RefundSweeper } from './refund-sweeper.service';
 import { RefundsService } from './refunds-admin.service';
 import { RefundsExecutor } from './refunds.service';
-import { StaffAlertsService } from './staff-alerts.service';
 import { WebhooksController } from './webhooks.controller';
 
 @Module({
-  imports: [BookingsModule, CatalogModule],
+  imports: [BookingsModule, CatalogModule, DocumentsModule],
   controllers: [
     PublicPaymentsController,
     PaymentsAdminController,
@@ -32,7 +32,6 @@ import { WebhooksController } from './webhooks.controller';
     RefundSweeper,
     RefundsExecutor,
     RefundsService,
-    StaffAlertsService,
   ],
   exports: [
     GatewayRegistry,

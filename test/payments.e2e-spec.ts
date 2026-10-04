@@ -9,7 +9,7 @@ import {
   signFakeEvent,
 } from '../src/modules/payments/providers/fake.gateway';
 import type { GatewayEvent } from '../src/modules/payments/providers/payment-gateway';
-import { StaffAlertsService } from '../src/modules/payments/staff-alerts.service';
+import { StaffAlertsService } from '../src/modules/alerts/staff-alerts.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import {
   billingBoleta,

@@ -7,7 +7,8 @@ import {
   GatewayError,
   GatewayNotConfiguredError,
 } from './providers/payment-gateway';
-import { StaffAlertsService } from './staff-alerts.service';
+import { StaffAlertsService } from '../alerts/staff-alerts.service';
+import { DocumentsService } from '../documents/documents.service';
 
 type Tx = Prisma.TransactionClient;
 
@@ -30,6 +31,7 @@ export class RefundsExecutor {
     private readonly gateways: GatewayRegistry,
     private readonly audit: AuditService,
     private readonly alerts: StaffAlertsService,
+    private readonly documents: DocumentsService,
   ) {}
 
   /** Suma un reembolso exitoso a pago y reserva. La reserva debe estar bloqueada. */
@@ -57,6 +59,8 @@ export class RefundsExecutor {
       where: { id: payment.bookingId },
       data: { refundedCents: { increment: refund.amountCents } },
     });
+    // Nota de crédito automática si el pago tenía comprobante (en la misma transacción).
+    await this.documents.creditNoteForRefund(tx, refund);
   }
 
   async execute(refundId: string): Promise<ExecuteOutcome> {
