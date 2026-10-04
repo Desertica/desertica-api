@@ -283,6 +283,7 @@ paths:
               schema: { $ref: '#/components/schemas/StripeIntent' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/bookings/{reference}/payments/culqi-charge:
     post:
       operationId: createBookingCulqiCharge
@@ -306,6 +307,7 @@ paths:
               schema: { $ref: '#/components/schemas/CulqiChargeResult' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/payment-links/{token}:
     get:
       operationId: getPaymentLinkInfo
@@ -337,7 +339,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/StripeIntent' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/payment-links/{token}/culqi-charge:
     post:
       operationId: createLinkCulqiCharge
@@ -357,13 +362,18 @@ paths:
               properties:
                 token: { type: string, description: Token generado por Culqi.js }
                 email: { type: string, format: email }
+                paymentId: { type: string, format: uuid, description: Pago `REQUIRES_ACTION` que se continúa tras 3DS. }
+                authentication3DS: { type: object, additionalProperties: true }
       responses:
         '201':
           description: Resultado del cobro
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CulqiChargeResult' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/waivers/{token}:
     get:
       operationId: getWaiverForm
@@ -508,7 +518,11 @@ paths:
       operationId: receiveStripeWebhook
       tags: [Webhooks]
       summary: Eventos de Stripe
-      description: Valida `Stripe-Signature`, guarda el evento y responde 2xx aunque ya estuviera procesado.
+      description: |
+        Valida `Stripe-Signature` sobre el cuerpo crudo (400 si falta o no coincide), guarda el evento en
+        `WebhookEvent` (idempotente por `eventId`) y responde 200 aunque ya estuviera procesado. Eventos usados:
+        `payment_intent.succeeded|payment_failed|canceled|requires_action`, `refund.created|updated|failed` y
+        `charge.dispute.created|updated|closed|funds_withdrawn|funds_reinstated`. 503 si el webhook no está configurado.
       security: []
       requestBody:
         required: true
@@ -523,6 +537,10 @@ paths:
       operationId: receiveCulqiWebhook
       tags: [Webhooks]
       summary: Eventos de Culqi
+      description: |
+        Valida la firma HMAC-SHA256 del cuerpo en `x-culqi-signature` (400 si falta o no coincide; 503 si no hay
+        secreto configurado). El API no confía en el contenido del evento: vuelve a consultar el cargo a Culqi.
+        El esquema de firma está pendiente de verificar contra la documentación oficial de Culqi.
       security: []
       requestBody:
         required: true
@@ -2711,8 +2729,16 @@ components:
       required: [kind, token, email]
       properties:
         kind: { $ref: '#/components/schemas/PaymentKind' }
-        token: { type: string, description: Token generado por Culqi.js en el navegador. }
+        token: { type: string, description: Token generado por Culqi.js en el navegador. Nunca un número de tarjeta. }
         email: { type: string, format: email }
+        paymentId:
+          type: string
+          format: uuid
+          description: Pago `REQUIRES_ACTION` que se continúa tras la autenticación 3DS (con `authentication3DS`).
+        authentication3DS:
+          type: object
+          additionalProperties: true
+          description: Parámetros que devolvió la autenticación 3DS en el navegador (Culqi3DS).
     StripeIntent:
       type: object
       required: [paymentId, clientSecret, publishableKey, amountCents, currency]
@@ -2730,7 +2756,9 @@ components:
         status: { $ref: '#/components/schemas/PaymentStatus' }
         action:
           type: object
-          description: Presente cuando el banco exige autenticación 3DS.
+          description: |
+            Presente cuando el banco exige autenticación 3DS. El navegador la ejecuta con Culqi3DS y reenvía el
+            mismo `token` con `paymentId` y `authentication3DS`. `parameters` trae `amountCents`, `currency` y `email`.
           properties:
             type: { type: string, enum: [THREE_DS] }
             parameters: { type: object, additionalProperties: true }
