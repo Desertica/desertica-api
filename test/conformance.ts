@@ -104,7 +104,10 @@ export function checkConformance(
   url: string,
   res: ResponseLike,
 ): string[] {
-  if (url.startsWith('/api/docs')) return [];
+  // Los preflight CORS no forman parte del contrato.
+  if (url.startsWith('/api/docs') || method.toUpperCase() === 'OPTIONS') {
+    return [];
+  }
   const op = findOperation(method, url);
   const label = `${method.toUpperCase()} ${url.split('?')[0]} -> ${res.status}`;
   if (!op) {

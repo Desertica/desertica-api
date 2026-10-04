@@ -2,7 +2,14 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { createTestApp, DOMAIN, loginAs, uniqueEmail } from './helpers';
+import {
+  createTestApp,
+  DOMAIN,
+  loginAs,
+  refreshCookie,
+  refreshTokenFrom,
+  uniqueEmail,
+} from './helpers';
 
 describe('Auth y permisos (e2e)', () => {
   let app: INestApplication<App>;
@@ -123,7 +130,7 @@ describe('Auth y permisos (e2e)', () => {
       await http().get('/api/auth/me').set(operator.auth).expect(401);
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: operator.refreshToken })
+        .set(refreshCookie(operator.refreshToken))
         .expect(401);
     });
   });
@@ -139,14 +146,11 @@ describe('Auth y permisos (e2e)', () => {
 
       const res = await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: session.refreshToken })
+        .set(refreshCookie(session.refreshToken))
         .expect(200);
-      const next = res.body as {
-        accessToken: string;
-        refreshToken: string;
-        expiresIn: number;
-      };
-      expect(next.refreshToken).not.toBe(session.refreshToken);
+      const next = res.body as { accessToken: string; expiresIn: number };
+      expect(res.body).not.toHaveProperty('refreshToken');
+      expect(refreshTokenFrom(res)).not.toBe(session.refreshToken);
       expect(next.expiresIn).toBeGreaterThan(0);
       await http()
         .get('/api/auth/me')
@@ -158,18 +162,18 @@ describe('Auth y permisos (e2e)', () => {
       const session = await loginAs(app, 'operator');
       const first = await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: session.refreshToken })
+        .set(refreshCookie(session.refreshToken))
         .expect(200);
-      const second = (first.body as { refreshToken: string }).refreshToken;
+      const second = refreshTokenFrom(first);
 
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: session.refreshToken })
+        .set(refreshCookie(session.refreshToken))
         .expect(401);
       // El token legítimo más reciente también quedó revocado.
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: second })
+        .set(refreshCookie(second))
         .expect(401);
     });
 
@@ -179,7 +183,7 @@ describe('Auth y permisos (e2e)', () => {
         [1, 2, 3].map(() =>
           http()
             .post('/api/auth/refresh')
-            .send({ refreshToken: session.refreshToken }),
+            .set(refreshCookie(session.refreshToken)),
         ),
       );
       expect(results.filter((r) => r.status === 200)).toHaveLength(1);
@@ -189,16 +193,16 @@ describe('Auth y permisos (e2e)', () => {
       const session = await loginAs(app, 'operator');
       await http()
         .post('/api/auth/logout')
-        .set(session.auth)
-        .send({ refreshToken: session.refreshToken })
-        .expect(204);
+        .set(refreshCookie(session.refreshToken))
+        .expect(204)
+        .expect('set-cookie', /desertica_refresh=;.*Max-Age=0/i);
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: session.refreshToken })
+        .set(refreshCookie(session.refreshToken))
         .expect(401);
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: 'unknown' })
+        .set(refreshCookie('unknown'))
         .expect(401);
 
       const other = await loginAs(app, 'operator');
@@ -208,8 +212,61 @@ describe('Auth y permisos (e2e)', () => {
       });
       await http()
         .post('/api/auth/refresh')
-        .send({ refreshToken: other.refreshToken })
+        .set(refreshCookie(other.refreshToken))
         .expect(401);
+    });
+  });
+
+  describe('refresh cookie', () => {
+    it('is HttpOnly, Strict, scoped to /api/auth and Secure by default', async () => {
+      const email = uniqueEmail('cookie');
+      const role = await prisma.role.findUniqueOrThrow({
+        where: { key: 'operator' },
+      });
+      await prisma.user.create({
+        data: { email, name: 'Cookie', roleId: role.id },
+      });
+      const res = await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${email}` })
+        .expect(200);
+      const cookie = ([] as string[])
+        .concat(res.headers['set-cookie'] as unknown as string[])
+        .find((c) => c.startsWith('desertica_refresh='))!;
+      expect(cookie).toMatch(/HttpOnly/i);
+      expect(cookie).toMatch(/Secure/i);
+      expect(cookie).toMatch(/SameSite=Strict/i);
+      expect(cookie).toMatch(/Path=\/api\/auth(;|$)/);
+      expect(res.body).not.toHaveProperty('refreshToken');
+    });
+
+    it('answers 401 without the cookie and does not accept a body token', async () => {
+      const session = await loginAs(app, 'operator');
+      await http().post('/api/auth/refresh').expect(401);
+      await http()
+        .post('/api/auth/refresh')
+        .send({ refreshToken: session.refreshToken })
+        .expect(401);
+    });
+
+    it('answers 204 on logout even without a cookie', async () => {
+      await http().post('/api/auth/logout').expect(204);
+    });
+
+    it('allows credentialed CORS only from configured origins', async () => {
+      const allowed = await http()
+        .options('/api/auth/refresh')
+        .set('Origin', 'http://localhost:4300')
+        .set('Access-Control-Request-Method', 'POST');
+      expect(allowed.headers['access-control-allow-credentials']).toBe('true');
+      expect(allowed.headers['access-control-allow-origin']).toBe(
+        'http://localhost:4300',
+      );
+      const denied = await http()
+        .options('/api/auth/refresh')
+        .set('Origin', 'https://evil.example')
+        .set('Access-Control-Request-Method', 'POST');
+      expect(denied.headers['access-control-allow-origin']).toBeUndefined();
     });
   });
 
