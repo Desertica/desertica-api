@@ -19,12 +19,24 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { PaginationQuery } from '../../../common/pagination/pagination';
+import { QuoteRequestDto } from '../../catalog/dto/catalog.dto';
 import {
+  BookingSource,
   BookingStatus,
   Currency,
   IdDocType,
   PaymentKind,
+  WaiverStatus,
 } from '../../../generated/prisma/enums';
+
+/** UNPAID = sin pagos; PARTIAL = pagó algo pero queda saldo; PAID = sin saldo. */
+export const PaymentStatusFilter = {
+  UNPAID: 'UNPAID',
+  PARTIAL: 'PARTIAL',
+  PAID: 'PAID',
+} as const;
+export type PaymentStatusFilter =
+  (typeof PaymentStatusFilter)[keyof typeof PaymentStatusFilter];
 
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
@@ -105,6 +117,10 @@ export class CreatePublicBookingDto {
   @ValidateNested()
   @Type(() => AttributionDto)
   attribution?: AttributionDto;
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9_-]{8,100}$/)
+  anonymousId?: string;
   @IsOptional() @IsString() @MaxLength(2048) turnstileToken?: string;
 }
 
@@ -121,6 +137,13 @@ export class BookingQuery extends PaginationQuery {
   @IsOptional() @IsISO8601() from?: string;
   @IsOptional() @IsISO8601() to?: string;
   @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsEnum(BookingSource) source?: BookingSource;
+  @IsOptional() @IsEnum(Currency) currency?: Currency;
+  @IsOptional() @IsUUID() customerId?: string;
+  @IsOptional()
+  @IsEnum(PaymentStatusFilter)
+  paymentStatus?: PaymentStatusFilter;
+  @IsOptional() @IsEnum(WaiverStatus) waiverStatus?: WaiverStatus;
 }
 
 export class CreateManualBookingDto {
@@ -194,3 +217,13 @@ export class CustomerQuery extends PaginationQuery {
 }
 
 export class UpdateCustomerDto extends CustomerInputDto {}
+
+export class StaffQuoteDto extends QuoteRequestDto {
+  @IsOptional() @IsInt() @Min(0) overrideTotalCents?: number;
+}
+
+export class CancellationQuoteQuery {
+  @IsOptional()
+  @IsEnum({ POLICY: 'POLICY', FULL: 'FULL', NONE: 'NONE' })
+  refund?: 'POLICY' | 'FULL' | 'NONE';
+}

@@ -1119,6 +1119,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/CancellationQuote' }
         '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /bookings/{id}/cancel:
     post:
       operationId: cancelBooking

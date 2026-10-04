@@ -221,6 +221,123 @@ export class BookingLifecycleService {
 
   // -------------------------------------------------------- Cancelar
 
+  /**
+   * Reembolso de una cancelación. Lo usan `cancel` (que luego registra las
+   * filas `Refund`) y `quoteCancellation` (que solo calcula).
+   */
+  private computeCancellation(
+    booking: {
+      paidCents: number;
+      depositCents: number | null;
+      cancellationSnapshot: Prisma.JsonValue;
+      departure: { startsAt: Date };
+    },
+    alreadyOut: number,
+    mode: 'POLICY' | 'FULL' | 'NONE',
+    now: Date,
+  ) {
+    const snapshot = booking.cancellationSnapshot as {
+      version?: number;
+      tiers?: CancellationTier[];
+      depositRefundable?: boolean;
+    };
+    const hoursUntil =
+      (booking.departure.startsAt.getTime() - now.getTime()) / 3_600_000;
+    const policyVersion = snapshot.version ?? null;
+    const percentOfPaid = (cents: number) =>
+      booking.paidCents > 0 ? Math.round((cents * 100) / booking.paidCents) : 0;
+
+    if (mode === 'NONE') {
+      return {
+        refundCents: 0,
+        refundPercent: 0,
+        tier: null,
+        policyVersion,
+        reason: 'NONE_REQUESTED' as string | null,
+        audit: { mode } as Prisma.InputJsonValue,
+      };
+    }
+    if (mode === 'FULL') {
+      const refundCents = Math.max(0, booking.paidCents - alreadyOut);
+      return {
+        refundCents,
+        refundPercent: percentOfPaid(refundCents),
+        tier: null,
+        policyVersion,
+        reason: refundCents === 0 ? 'NOTHING_TO_REFUND' : null,
+        audit: { mode } as Prisma.InputJsonValue,
+      };
+    }
+    const result = computeRefund({
+      paidCents: booking.paidCents,
+      refundedCents: Math.min(alreadyOut, booking.paidCents),
+      depositCents: booking.depositCents,
+      depositRefundable: snapshot.depositRefundable ?? false,
+      tiers: snapshot.tiers ?? [],
+      hoursUntilDeparture: hoursUntil,
+    });
+    let reason: string | null = null;
+    if (result.refundCents === 0) {
+      if (booking.paidCents === 0) reason = 'NO_PAYMENTS';
+      else if (!(snapshot.tiers?.length ?? 0)) reason = 'NO_POLICY';
+      else if (result.refundPercent === 0) reason = 'OUTSIDE_POLICY_WINDOW';
+      else reason = 'NOTHING_TO_REFUND';
+    }
+    return {
+      refundCents: result.refundCents,
+      // Porcentaje del tramo aplicado (no de lo pagado): es lo que explica la política.
+      refundPercent: result.refundPercent,
+      tier: result.tier,
+      policyVersion,
+      reason,
+      audit: toJson({
+        mode: 'POLICY',
+        tier: result.tier,
+        refundPercent: result.refundPercent,
+        hoursUntilDeparture: Math.round(hoursUntil * 100) / 100,
+      }),
+    };
+  }
+
+  /** Cuánto se reembolsaría al cancelar, sin cambiar nada. */
+  async quoteCancellation(
+    id: string,
+    mode: 'POLICY' | 'FULL' | 'NONE' = 'POLICY',
+    now = new Date(),
+  ) {
+    const booking = await this.prisma.booking.findUnique({
+      where: { id },
+      include: { departure: true },
+    });
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (!ACTIVE.includes(booking.status)) {
+      throw new ConflictException(
+        `A ${booking.status} booking cannot be cancelled`,
+      );
+    }
+    const pendingRefunds = await this.prisma.refund.aggregate({
+      where: { status: 'PENDING', payment: { bookingId: id } },
+      _sum: { amountCents: true },
+    });
+    const alreadyOut =
+      booking.refundedCents + (pendingRefunds._sum.amountCents ?? 0);
+    const calc = this.computeCancellation(booking, alreadyOut, mode, now);
+    return {
+      currency: booking.currency,
+      paidCents: booking.paidCents,
+      refundCents: calc.refundCents,
+      refundPercent: calc.refundPercent,
+      tier: calc.tier
+        ? {
+            hoursBefore: calc.tier.hoursBefore,
+            refundPercent: calc.tier.refundPercent,
+          }
+        : null,
+      policyVersion: calc.policyVersion,
+      reason: calc.reason,
+    };
+  }
+
   async cancel(
     id: string,
     dto: CancelBookingDto,
@@ -254,34 +371,14 @@ export class BookingLifecycleService {
       });
       const alreadyOut =
         booking.refundedCents + (pendingRefunds._sum.amountCents ?? 0);
-      const snapshot = booking.cancellationSnapshot as {
-        tiers?: CancellationTier[];
-        depositRefundable?: boolean;
-      };
-      const hoursUntil =
-        (booking.departure.startsAt.getTime() - now.getTime()) / 3_600_000;
-
-      let refundCents = 0;
-      let policyTier: Prisma.InputJsonValue = { mode: dto.refund };
-      if (dto.refund === 'FULL') {
-        refundCents = Math.max(0, booking.paidCents - alreadyOut);
-      } else if (dto.refund === 'POLICY') {
-        const result = computeRefund({
-          paidCents: booking.paidCents,
-          refundedCents: Math.min(alreadyOut, booking.paidCents),
-          depositCents: booking.depositCents,
-          depositRefundable: snapshot.depositRefundable ?? false,
-          tiers: snapshot.tiers ?? [],
-          hoursUntilDeparture: hoursUntil,
-        });
-        refundCents = result.refundCents;
-        policyTier = toJson({
-          mode: 'POLICY',
-          tier: result.tier,
-          refundPercent: result.refundPercent,
-          hoursUntilDeparture: Math.round(hoursUntil * 100) / 100,
-        });
-      }
+      const calc = this.computeCancellation(
+        booking,
+        alreadyOut,
+        dto.refund,
+        now,
+      );
+      const refundCents = calc.refundCents;
+      const policyTier: Prisma.InputJsonValue = calc.audit;
       await this.createPendingRefunds(
         tx,
         id,
