@@ -16,6 +16,12 @@ import { UsersModule } from './modules/users/users.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CmsModule } from './modules/cms/cms.module';
 import { SettingsModule } from './modules/settings/settings.module';
+import { BookingsModule } from './modules/bookings/bookings.module';
+import { ComplianceModule } from './modules/compliance/compliance.module';
+import { CustomersModule } from './modules/customers/customers.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { CaptchaModule } from './common/captcha/captcha.module';
+import { IdempotencyModule } from './common/idempotency/idempotency.module';
 import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -62,6 +68,12 @@ import { PrismaModule } from './prisma/prisma.module';
     SettingsModule,
     CmsModule,
     CatalogModule,
+    IdempotencyModule,
+    CaptchaModule,
+    NotificationsModule,
+    ComplianceModule,
+    BookingsModule,
+    CustomersModule,
     HealthModule,
   ],
   providers: [
