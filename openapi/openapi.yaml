@@ -374,6 +374,33 @@ paths:
         '409': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
         '502': { $ref: '#/components/responses/Error' }
+  /public/documents/{id}/pdf:
+    get:
+      operationId: downloadPublicDocumentPdf
+      tags: [Public]
+      summary: Descargar el PDF de un comprobante con un enlace firmado
+      description: |
+        El enlace (`pdfUrl` de `PublicBooking.documents`) lleva `exp` y `sig` (HMAC) y vale una hora; cada lectura
+        de la reserva genera uno nuevo. Un enlace inválido o vencido, o un comprobante que no es boleta ni factura
+        vigente, responde 404.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: exp
+          in: query
+          required: true
+          schema: { type: integer, description: Vencimiento en segundos Unix. }
+        - name: sig
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
   /public/waivers/{token}:
     get:
       operationId: getWaiverForm
@@ -1296,6 +1323,11 @@ paths:
       operationId: issueDocument
       tags: [Documents]
       summary: Emitir el comprobante de una reserva
+      description: |
+        Asigna serie y correlativo, calcula base e IGV y deja el envío a `desertica-billing` en una cola con
+        reintentos (la misma `externalId` en cada uno). Responde 202 con el comprobante en `PENDING`: su estado
+        final llega después. 409 si no hay empresa o serie configuradas, si el pago ya tiene comprobante o si no
+        queda nada por documentar.
       x-permission: documents:issue
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1321,6 +1353,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
 
   # ---------------------------------------------------------------- Payments
@@ -1590,6 +1623,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/void:
     post:
       operationId: voidDocument
@@ -1606,13 +1641,15 @@ paths:
               type: object
               required: [reason]
               properties:
-                reason: { type: string }
+                reason: { type: string, maxLength: 100 }
       responses:
         '202':
           description: Anulación encolada
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/credit-note:
     post:
       operationId: createCreditNote
@@ -1637,6 +1674,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/files/{kind}:
     get:
       operationId: downloadDocumentFile
@@ -3083,6 +3122,9 @@ components:
         holdMinutes: { type: integer, minimum: 1, maximum: 120, default: 15, description: Duración del bloqueo de cupo. }
         operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
+        autoIssueDocuments: { type: boolean, default: true, description: Emitir el comprobante automáticamente al confirmarse un pago (y la nota de crédito al reembolsar). }
+        exchangeRateUsdPen: { type: string, example: '3.7500', description: Tipo de cambio SUNAT USD→PEN vigente para comprobantes en USD (si falta se usa EXCHANGE_RATE_FALLBACK). }
+        exchangeRates: { type: object, additionalProperties: { type: string }, description: 'Tipos de cambio por fecha, p. ej. {"2026-10-04":"3.7500"}; tiene prioridad sobre `exchangeRateUsdPen`.' }
       additionalProperties: true
     SettingsInput:
       type: object
