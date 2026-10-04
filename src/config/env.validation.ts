@@ -62,6 +62,10 @@ export const envSchema = Joi.object({
     }),
   JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(60).default(900),
   REFRESH_TTL_DAYS: Joi.number().integer().min(1).default(30),
+  /** Atributo `Secure` de la cookie del refresh token. Solo se puede apagar fuera de producción (HTTP local). */
+  REFRESH_COOKIE_SECURE: Joi.boolean()
+    .default(true)
+    .when('NODE_ENV', { is: 'production', then: Joi.valid(true) }),
   /** Solo desarrollo y pruebas: acepta un ID token falso con este prefijo. */
   AUTH_ALLOW_FAKE_GOOGLE: Joi.boolean()
     .default(false)
@@ -102,6 +106,7 @@ export interface EnvVars {
   JWT_ACCESS_SECRET: string;
   JWT_ACCESS_TTL_SECONDS: number;
   REFRESH_TTL_DAYS: number;
+  REFRESH_COOKIE_SECURE: boolean;
   AUTH_ALLOW_FAKE_GOOGLE: boolean;
   TURNSTILE_SECRET_KEY: string;
   STAFF_NOTIFY_EMAIL: string;
