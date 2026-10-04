@@ -16,5 +16,34 @@ services:
       timeout: 5s
       retries: 10
 
+  # Opcional: `docker compose --profile redis up -d`. Sin Redis la API usa
+  # almacenes en memoria (solo válido con una instancia).
+  redis:
+    image: redis:7-alpine
+    profiles: ['redis']
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # `docker compose --profile app up --build`: la API en contenedor contra el Postgres local.
+  api:
+    build: .
+    profiles: ['app']
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://desertica:desertica@postgres:5432/desertica?schema=public
+      CORS_ORIGINS: http://localhost:4200,http://localhost:4300
+      JWT_ACCESS_SECRET: local-only-secret-local-only-secret-0123456789
+    ports:
+      - '3000:3000'
+
 volumes:
   desertica_pg:
