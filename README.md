@@ -75,6 +75,16 @@ Crear un bloqueo (`Hold`), una reserva manual o reprogramar toma `SELECT … FOR
 
 `Mailer` es una interfaz; el driver actual (`LogMailer`) escribe en el log. Los enlaces usan `PUBLIC_WEB_URL` y las rutas de `modules/bookings/links.ts` (`/booking/<ref>?token=`, `/waiver/<token>`, `/pay/<token>`).
 
+### Pagos por pasarela
+
+Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payments/providers/payment-gateway.ts`) con tres adaptadores: `StripeGateway` (PaymentIntents con métodos automáticos para Apple Pay y Google Pay; solo USD), `CulqiGateway` (cargo con el token de Culqi.js; USD y PEN) y `FakeGateway` (`PAYMENT_GATEWAY_MODE=fake`, solo desarrollo y pruebas).
+
+- **Flujo Stripe**: `createBookingStripeIntent` crea un `Payment` en `PENDING` y devuelve `clientSecret`; el navegador confirma con Stripe.js; **solo el webhook** (`/api/webhooks/stripe`) acredita el pago.
+- **Flujo Culqi**: el navegador obtiene el token con Culqi.js y llama `createBookingCulqiCharge`; el API cobra. Si el banco pide 3DS, la respuesta trae `action: THREE_DS`: el navegador ejecuta Culqi3DS y reenvía el mismo token con `paymentId` y `authentication3DS`. El resultado servidor a servidor de Culqi y su webhook pasan por el mismo procesador (`PaymentEventsService`), idempotente por `WebhookEvent (provider, eventId)`.
+- **Importe y moneda** salen siempre de la reserva o del enlace, nunca del cliente. Un evento con importe o moneda distintos al `Payment` se rechaza (`amount_mismatch`) y avisa al staff.
+- **Pago tardío**: un pago confirmado sobre una reserva vencida por falta de pago (`payment_timeout`) la reactiva si la salida sigue abierta y hay cupo; si no, o si una persona la canceló, se crea un `Refund` automático y se avisa al staff. Un pago de más (dos cobros simultáneos) reembolsa el excedente.
+- **Webhooks a registrar**: ver "Pasos manuales" del informe de la Ola 2. Las firmas se validan sobre el cuerpo crudo (`modules/payments/raw-body.ts`).
+
 ## Prisma 7
 
 El cliente se genera en `src/generated/prisma` (ignorado por git) con `moduleFormat = "cjs"` para alinearlo con NestJS. La URL de conexión vive en `prisma.config.ts`, no en el `datasource` del schema.
