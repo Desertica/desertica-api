@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { EnvVars } from '../config/env.validation';
+import { captureWebhookRawBody } from '../modules/payments/raw-body';
 import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { PrismaExceptionFilter } from './filters/prisma-exception.filter';
 
@@ -39,6 +40,7 @@ export function configureApp(app: INestApplication): void {
   http.disable('x-powered-by');
 
   app.use(helmet());
+  captureWebhookRawBody(app);
   app.enableCors({
     origin: parseOrigins(config.get('CORS_ORIGINS', { infer: true })),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

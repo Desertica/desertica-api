@@ -22,6 +22,7 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { CaptchaModule } from './common/captcha/captcha.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -73,6 +74,7 @@ import { PrismaModule } from './prisma/prisma.module';
     NotificationsModule,
     ComplianceModule,
     BookingsModule,
+    PaymentsModule,
     CustomersModule,
     HealthModule,
   ],

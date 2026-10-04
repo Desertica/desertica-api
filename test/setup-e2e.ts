@@ -7,3 +7,4 @@ process.env.CORS_ORIGINS = 'http://localhost:4200,http://localhost:4300';
 // El e2e no usa Redis aunque exista en el entorno.
 delete process.env.REDIS_URL;
 process.env.THROTTLE_SCALE = '1000';
+process.env.PAYMENT_GATEWAY_MODE = 'fake';
