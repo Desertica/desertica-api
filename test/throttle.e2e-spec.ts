@@ -11,7 +11,7 @@ describe('Rate limit (e2e)', () => {
   beforeAll(async () => {
     process.env.THROTTLE_LIMIT = '3';
     // AppModule lee el entorno al importarse, así que se importa después de fijarlo.
-    const appModule = (await import('../src/app.module')) as {
+    const appModule = (await import('../src/app.module.js')) as {
       AppModule: typeof AppModuleType;
     };
     const moduleFixture = await Test.createTestingModule({
