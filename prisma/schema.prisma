@@ -232,6 +232,8 @@ model Customer {
   idDocType   IdDocType?
   idDocNumber String?
   locale      String       @default("es")
+  /// Cuándo se anonimizó por un pedido ARCO (los datos personales ya no existen).
+  erasedAt    DateTime?
   bookings    Booking[]
   acceptances Acceptance[]
   createdAt   DateTime     @default(now())
