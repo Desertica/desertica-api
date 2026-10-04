@@ -65,6 +65,28 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 - [ ] En `desertica-api`, añadir a `.github/workflows/ci.yml`, después de `npm run lint`, los pasos `npm run openapi:lint` y `npx prisma validate`. *Tú (requiere permiso `workflow`).*
 - [ ] Crear los workflows de CI e imagen Docker de `desertica-backoffice` y `desertica-billing` (copiar el patrón de `desertica-api` y `desertica-web`).
 
+## API: lo que queda de la Ola 1 y de la Ola 2
+
+Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimiento y la prueba de conformidad con el contrato. Faltan 31 de las 93 operaciones del contrato (se listan con `SHOW_MISSING_OPERATIONS=1 npm run test:e2e -- test/routes`):
+
+- [ ] **Pasarelas (Ola 2)**: `createBookingStripeIntent`, `createBookingCulqiCharge`, `createLinkStripeIntent`, `createLinkCulqiCharge`, `receiveStripeWebhook`, `receiveCulqiWebhook`, interfaz `PaymentProvider` con adaptadores `stripe` y `culqi`, `WebhookEvent` idempotente. El webhook debe reutilizar `BookingPaymentsService.applySucceededPayment` con la reserva bloqueada.
+- [ ] **Pago que llega después del vencimiento (Ola 2)**: `ExpiryService` cancela la reserva web sin pago al vencer la ventana (salvo pago en curso); si el webhook confirma un pago sobre una reserva ya cancelada hay que reactivarla si hay cupo o reembolsar. Definir y probar.
+- [ ] **Reembolsos (Ola 2)**: `createRefund`, `listRefunds`. Hoy la cancelación y la reprogramación solo crean filas `Refund` en `PENDING` (repartidas entre pagos, del más reciente al más antiguo); nada las ejecuta ni actualiza `paidCents`/`refundedCents`. Tope de reembolso del operador (`operatorRefundLimitCents`) y `payments:refund-any` por aplicar ahí.
+- [ ] **Comprobantes (Ola 2)**: `issueDocument`, `listDocuments`, `getDocument`, `retryDocument`, `voidDocument`, `createCreditNote`, `downloadDocumentFile`; cliente de `desertica-billing`; `PublicBooking.documents` hoy siempre vacío.
+- [ ] **Pagos y disputas, solo lectura/edición**: `listPayments`, `getPayment`, `listDisputes`, `getDispute`, `updateDispute`, `downloadDisputeEvidence`.
+- [ ] **Administración sin asignar a un hito**: `getCompany`/`saveCompany`, `listSeries`/`createSeries`, `listBlockedIdentities`/`createBlockedIdentity` (y aplicar los bloqueos al reservar), `getDashboardSummary`, `getSalesReport`, `eraseCustomer` (ARCO), `cancelDeparture` (cancelar una salida y reembolsar/reprogramar sus reservas).
+- [ ] **Contrato sin cubrir un caso del web**: el evento `cancel_booking` de `docs/analytics-events.md` supone cancelar desde "mi reserva", pero no hay operación pública para eso. Decidir si se agrega.
+- [ ] **Mensajes de contacto**: se guardan en `ContactMessage` y avisan a `STAFF_NOTIFY_EMAIL`, pero el contrato no tiene operación para listarlos ni marcarlos atendidos.
+- [ ] **Correo real**: hoy `LogMailer` escribe en el log. Falta el driver (SMTP/API de correo) y las plantillas (`booking_created`, `booking_confirmed`, `booking_cancelled`, `booking_rescheduled`, `booking_expired`, `booking_access`, `payment_link`, `complaint_received`, `complaint_answered`, `complaint_staff_alert`, `contact_message`).
+- [ ] **Rutas de los enlaces de correo**: el API arma `/booking/<ref>?token=`, `/waiver/<token>` y `/pay/<token>` sobre `PUBLIC_WEB_URL` (`modules/bookings/links.ts`). `desertica-web` debe implementarlas o avisar para cambiarlas.
+- [ ] **Redis en producción**: el rate limit y la caché del CMS usan memoria si no hay `REDIS_URL`; con más de una instancia hay que configurarlo.
+- [ ] **Turnstile**: sin `TURNSTILE_SECRET_KEY` no se verifica el captcha. Configurarlo en staging y producción.
+- [ ] **Depósito**: el porcentaje vive en `Setting.depositPercent` (30 %); el CMS tiene `booking-setting.depositRate`. Dejar una sola fuente (el dinero es del API) y quitar el otro.
+- [ ] **Texto del descargo**: `Waiver.version` es 1 fijo y el texto del descargo no se guarda como snapshot (solo los documentos legales). Definir cómo se versiona (¿tipo `WAIVER` en `LegalDocument`?) antes de generar el PDF firmado.
+- [ ] **Política de cancelación**: un tour sin política asignada se reserva con "sin reembolso" (`tiers: []`). Asignar una a todos los tours antes de vender; considerar exigirla en la publicación.
+- [ ] **Reclamos**: el plazo se cuenta en días hábiles (lunes a viernes, sin feriados) con `complaintDueDays` = 15. Confirmar con el abogado si son 15 hábiles o 30 corridos y cargar los feriados.
+- [ ] **Imagen Docker**: se verificó el `build` de Nest pero no `docker build` (no había daemon). La imagen incluye devDependencies porque el CLI de Prisma se usa para migrar.
+
 ## Documentación
 
 - [ ] ADRs de las decisiones del plan.
