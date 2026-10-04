@@ -13,8 +13,10 @@ import { AuthGuard } from './modules/auth/auth.guard';
 import { AuthModule } from './modules/auth/auth.module';
 import { RolesModule } from './modules/roles/roles.module';
 import { UsersModule } from './modules/users/users.module';
+import { CatalogModule } from './modules/catalog/catalog.module';
+import { CmsModule } from './modules/cms/cms.module';
+import { SettingsModule } from './modules/settings/settings.module';
 import { HealthModule } from './modules/health/health.module';
-import { ToursModule } from './modules/tours/tours.module';
 import { PrismaModule } from './prisma/prisma.module';
 
 @Module({
@@ -57,8 +59,10 @@ import { PrismaModule } from './prisma/prisma.module';
     AuthModule,
     UsersModule,
     RolesModule,
+    SettingsModule,
+    CmsModule,
+    CatalogModule,
     HealthModule,
-    ToursModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
