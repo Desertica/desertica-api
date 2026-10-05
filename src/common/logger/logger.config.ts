@@ -11,6 +11,16 @@ export const REDACT_PATHS = [
   'res.headers["set-cookie"]',
 ];
 
+/**
+ * Las URLs llevan credenciales de un solo propósito (token de enlace de pago,
+ * de descargo, firma del PDF): no deben quedar en los logs.
+ */
+export function redactUrl(url: string): string {
+  return url
+    .replace(/(\/public\/(?:payment-links|waivers)\/)[^/?#]+/, '$1[redacted]')
+    .replace(/([?&](?:sig|token)=)[^&#]+/g, '$1[redacted]');
+}
+
 export function buildLoggerParams(options: {
   level: string;
   pretty: boolean;
@@ -40,7 +50,7 @@ export function buildLoggerParams(options: {
         req: (req: { id: string; method: string; url: string }) => ({
           id: req.id,
           method: req.method,
-          url: req.url,
+          url: redactUrl(req.url),
         }),
       },
       ...(options.pretty

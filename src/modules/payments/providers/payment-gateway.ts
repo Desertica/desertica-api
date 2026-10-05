@@ -26,6 +26,8 @@ export interface GatewayPayment {
   metadata: Record<string, string>;
   /** El cargo tiene una disputa abierta (Culqi la indica en el propio cargo). */
   disputed?: boolean;
+  /** Total ya devuelto según la pasarela (Culqi: `amount_refunded`). */
+  refundedCents?: number;
 }
 
 export interface GatewayRefund {

@@ -207,6 +207,9 @@ export class CulqiGateway implements PaymentGateway {
       currency,
       metadata,
       disputed: charge.dispute === true,
+      ...(typeof charge.amount_refunded === 'number'
+        ? { refundedCents: charge.amount_refunded }
+        : {}),
     };
     if (review) {
       return {
