@@ -198,7 +198,7 @@ export class BookingPaymentsService {
     return { status: result.status, body };
   }
 
-  private async sendConfirmedEmail(bookingId: string) {
+  async sendConfirmedEmail(bookingId: string) {
     const b = await this.prisma.booking.findUniqueOrThrow({
       where: { id: bookingId },
       include: { customer: true, departure: { include: { tourRef: true } } },

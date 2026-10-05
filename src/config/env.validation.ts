@@ -129,6 +129,48 @@ export const envSchema = Joi.object({
   CMS_URL: Joi.string().uri().default('http://localhost:1337'),
   CMS_API_TOKEN: Joi.string().allow('').default(''),
   CMS_CACHE_TTL_SECONDS: Joi.number().integer().min(0).default(300),
+
+  // Pagos (Ola 2). `fake` solo existe para desarrollo y pruebas: nunca mueve dinero.
+  PAYMENT_GATEWAY_MODE: Joi.string()
+    .valid('live', 'fake')
+    .default('live')
+    .when('NODE_ENV', { is: 'production', then: Joi.valid('live') }),
+  /** Stripe cobra solo USD. Sin claves, sus operaciones responden 503. */
+  STRIPE_SECRET_KEY: Joi.string().allow('').default(''),
+  STRIPE_PUBLISHABLE_KEY: Joi.string().allow('').default(''),
+  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /** Culqi cobra USD o PEN. */
+  CULQI_SECRET_KEY: Joi.string().allow('').default(''),
+  CULQI_PUBLIC_KEY: Joi.string().allow('').default(''),
+  CULQI_API_URL: Joi.string().uri().default('https://api.culqi.com/v2'),
+  /** Secreto compartido del webhook de Culqi (ver `CulqiGateway.parseWebhook`). */
+  CULQI_WEBHOOK_SECRET: Joi.string().allow('').default(''),
+  /** Cada cuántos segundos se ejecutan los reembolsos pendientes (0 = apagado). */
+  REFUND_SWEEP_SECONDS: Joi.number().integer().min(0).default(60),
+
+  // Comprobantes (Ola 2). `fake` solo existe para desarrollo y pruebas.
+  BILLING_MODE: Joi.string()
+    .valid('live', 'fake')
+    .default('live')
+    .when('NODE_ENV', { is: 'production', then: Joi.valid('live') }),
+  /** Base de `desertica-billing` (servicio interno, sin puerto público). */
+  BILLING_URL: Joi.string().uri().default('http://desertica-billing:8080'),
+  /** Token de servicio (`Authorization: Bearer`) que `desertica-billing` exige. */
+  BILLING_SERVICE_TOKEN: Joi.string().allow('').default(''),
+  /** Cómo envía billing a SUNAT; si no se define decide el servicio. */
+  BILLING_SUBMISSION: Joi.string()
+    .valid('IMMEDIATE', 'DAILY_SUMMARY')
+    .optional(),
+  /** Directorio de los XML, CDR y PDF (nunca en Git). S3 compatible queda para después. */
+  DOCUMENT_STORAGE_DIR: Joi.string().default('./storage/documents'),
+  /** Tipo de cambio USD→PEN de respaldo cuando no hay uno cargado en `Setting`. */
+  EXCHANGE_RATE_FALLBACK: Joi.string()
+    .pattern(/^\d+(\.\d{1,4})?$/)
+    .default('3.7500'),
+  /** Base pública del API: arma los enlaces de descarga del comprobante para el cliente. */
+  PUBLIC_API_URL: Joi.string().uri().default('http://localhost:3000/api'),
+  /** Cada cuántos segundos corre el procesador de comprobantes (0 = apagado). */
+  DOCUMENT_WORKER_SECONDS: Joi.number().integer().min(0).default(15),
 });
 
 export interface EnvVars {
@@ -165,4 +207,21 @@ export interface EnvVars {
   CMS_URL: string;
   CMS_API_TOKEN: string;
   CMS_CACHE_TTL_SECONDS: number;
+  PAYMENT_GATEWAY_MODE: 'live' | 'fake';
+  STRIPE_SECRET_KEY: string;
+  STRIPE_PUBLISHABLE_KEY: string;
+  STRIPE_WEBHOOK_SECRET: string;
+  CULQI_SECRET_KEY: string;
+  CULQI_PUBLIC_KEY: string;
+  CULQI_API_URL: string;
+  CULQI_WEBHOOK_SECRET: string;
+  REFUND_SWEEP_SECONDS: number;
+  BILLING_MODE: 'live' | 'fake';
+  BILLING_URL: string;
+  BILLING_SERVICE_TOKEN: string;
+  BILLING_SUBMISSION?: 'IMMEDIATE' | 'DAILY_SUMMARY';
+  DOCUMENT_STORAGE_DIR: string;
+  EXCHANGE_RATE_FALLBACK: string;
+  PUBLIC_API_URL: string;
+  DOCUMENT_WORKER_SECONDS: number;
 }

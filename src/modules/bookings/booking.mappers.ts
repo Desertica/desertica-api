@@ -78,7 +78,7 @@ export const toDocumentDto = (
   totalCents: d.totalCents,
   taxableCents: d.taxableCents,
   igvCents: d.igvCents,
-  exchangeRate: d.exchangeRate ? d.exchangeRate.toString() : null,
+  exchangeRate: d.exchangeRate ? d.exchangeRate.toFixed(4) : null,
   sunatCode: d.sunatCode,
   sunatMessage: d.sunatMessage,
   relatedDocumentId: d.relatedDocumentId,

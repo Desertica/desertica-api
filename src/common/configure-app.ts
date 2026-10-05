@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { EnvVars } from '../config/env.validation';
+import { captureWebhookRawBody } from '../modules/payments/raw-body';
 import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { PrismaExceptionFilter } from './filters/prisma-exception.filter';
 import { requestContext } from './request-context';
@@ -52,6 +53,7 @@ export function configureApp(app: INestApplication): void {
 
   app.use(helmet());
   app.use(requestContext);
+  captureWebhookRawBody(app);
   app.enableCors({
     // Credenciales (cookie del refresh) solo para la lista explícita; nunca `*`.
     origin: parseOrigins(config.get('CORS_ORIGINS', { infer: true })),

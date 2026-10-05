@@ -9,6 +9,9 @@ import { KeyValueThrottlerStorage } from './common/cache/kv-throttler-storage';
 import { buildLoggerParams } from './common/logger/logger.config';
 import { EnvVars, envSchema } from './config/env.validation';
 import { AdminModule } from './modules/admin/admin.module';
+import { DocumentsModule } from './modules/documents/documents.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { AlertsModule } from './modules/alerts/alerts.module';
 import { AuditModule } from './modules/audit/audit.module';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { AuthModule } from './modules/auth/auth.module';
@@ -24,6 +27,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { CaptchaModule } from './common/captcha/captcha.module';
 import { QueueModule } from './common/queue/queue.module';
 import { IdempotencyModule } from './common/idempotency/idempotency.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 import { HealthModule } from './modules/health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 
@@ -76,6 +80,10 @@ import { PrismaModule } from './prisma/prisma.module';
     NotificationsModule,
     ComplianceModule,
     BookingsModule,
+    AlertsModule,
+    BillingModule,
+    DocumentsModule,
+    PaymentsModule,
     CustomersModule,
     AdminModule,
     HealthModule,

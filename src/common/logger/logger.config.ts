@@ -12,6 +12,9 @@ export const REDACT_PATHS = [
   'res.headers["set-cookie"]',
 ];
 
+/** Redacción de URLs: vive en `sanitize.ts` y se reexporta aquí. */
+export { redactUrl };
+
 export function buildLoggerParams(options: {
   level: string;
   pretty: boolean;

@@ -1,4 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { publicDocumentUrl } from '../../common/signed-link';
+import { EnvVars } from '../../config/env.validation';
 import { paginated, skipTake } from '../../common/pagination/pagination';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -18,6 +21,7 @@ export class BookingViewService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly titles: TourTitlesService,
+    private readonly config: ConfigService<EnvVars, true>,
   ) {}
 
   readonly summaryInclude = {
@@ -203,7 +207,28 @@ export class BookingViewService {
                 : null,
               status: w.status,
             })),
-      documents: [] as { docType: string; number: string; pdfUrl: string }[],
+      documents: await this.publicDocuments(db, b.id),
     };
+  }
+
+  /** Comprobantes con PDF guardado, con un enlace de descarga firmado y de corta vida. */
+  private async publicDocuments(db: Db, bookingId: string) {
+    const docs = await db.document.findMany({
+      where: {
+        bookingId,
+        docType: { in: ['BOLETA', 'FACTURA'] },
+        status: { in: ['ISSUED', 'ACCEPTED'] },
+        pdfKey: { not: null },
+      },
+      include: { series: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const api = this.config.get('PUBLIC_API_URL', { infer: true });
+    const secret = this.config.get('JWT_ACCESS_SECRET', { infer: true });
+    return docs.map((d) => ({
+      docType: d.docType,
+      number: `${d.series.prefix}-${String(d.number).padStart(8, '0')}`,
+      pdfUrl: publicDocumentUrl(api, secret, d.id),
+    }));
   }
 }
