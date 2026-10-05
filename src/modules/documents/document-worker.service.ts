@@ -83,14 +83,21 @@ export class DocumentWorker
     if (this.timer) clearInterval(this.timer);
   }
 
-  async runOnce(now = new Date()): Promise<{ issued: number; jobs: number }> {
+  /**
+   * Una pasada de trabajo. `onlyDocumentIds` (pruebas) limita la pasada a los
+   * trabajos de esos comprobantes y se salta la emisión de pagos pendientes.
+   */
+  async runOnce(
+    now = new Date(),
+    onlyDocumentIds?: string[],
+  ): Promise<{ issued: number; jobs: number }> {
     return this.prisma.$transaction(
       async (tx) => {
         const row = await tx.$queryRaw<{ locked: boolean }[]>`
           SELECT pg_try_advisory_xact_lock(hashtext(${ADVISORY_KEY})) AS locked`;
         if (!row[0]?.locked) return { issued: 0, jobs: 0 };
-        const issued = await this.issueMissing(now);
-        const jobs = await this.runJobs(now);
+        const issued = onlyDocumentIds ? 0 : await this.issueMissing(now);
+        const jobs = await this.runJobs(now, onlyDocumentIds);
         return { issued, jobs };
       },
       { timeout: 600_000, maxWait: 5_000 },
@@ -110,9 +117,11 @@ export class DocumentWorker
         documents: { none: {} },
         refunds: { none: { status: 'PENDING' } },
       },
-      orderBy: { paidAt: 'asc' },
+      // Los más recientes primero: uno que no se puede emitir (p. ej. ya cubierto por
+      // un comprobante manual de toda la reserva) no deja sin turno a los nuevos.
+      orderBy: { paidAt: 'desc' },
       select: { id: true },
-      take: 20,
+      take: 50,
     });
     let issued = 0;
     for (const { id } of payments) {
@@ -121,7 +130,10 @@ export class DocumentWorker
     return issued;
   }
 
-  private async runJobs(now: Date): Promise<number> {
+  private async runJobs(
+    now: Date,
+    onlyDocumentIds?: string[],
+  ): Promise<number> {
     let processed = 0;
     // Por lotes hasta vaciar lo vencido (con tope). Un trabajo ya visto en esta
     // pasada no se repite aunque su reintento también venza dentro de `now`.
@@ -132,6 +144,7 @@ export class DocumentWorker
           status: 'PENDING',
           nextAttemptAt: { lte: now },
           id: { notIn: seen },
+          ...(onlyDocumentIds ? { documentId: { in: onlyDocumentIds } } : {}),
         },
         orderBy: { nextAttemptAt: 'asc' },
         take: 50,
