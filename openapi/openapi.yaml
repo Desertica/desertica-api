@@ -283,6 +283,7 @@ paths:
               schema: { $ref: '#/components/schemas/StripeIntent' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/bookings/{reference}/payments/culqi-charge:
     post:
       operationId: createBookingCulqiCharge
@@ -306,6 +307,7 @@ paths:
               schema: { $ref: '#/components/schemas/CulqiChargeResult' }
         '409': { $ref: '#/components/responses/Error' }
         '422': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/payment-links/{token}:
     get:
       operationId: getPaymentLinkInfo
@@ -337,7 +339,10 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/StripeIntent' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
   /public/payment-links/{token}/culqi-charge:
     post:
       operationId: createLinkCulqiCharge
@@ -357,13 +362,45 @@ paths:
               properties:
                 token: { type: string, description: Token generado por Culqi.js }
                 email: { type: string, format: email }
+                paymentId: { type: string, format: uuid, description: Pago `REQUIRES_ACTION` que se continúa tras 3DS. }
+                authentication3DS: { type: object, additionalProperties: true }
       responses:
         '201':
           description: Resultado del cobro
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CulqiChargeResult' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
+        '502': { $ref: '#/components/responses/Error' }
+  /public/documents/{id}/pdf:
+    get:
+      operationId: downloadPublicDocumentPdf
+      tags: [Public]
+      summary: Descargar el PDF de un comprobante con un enlace firmado
+      description: |
+        El enlace (`pdfUrl` de `PublicBooking.documents`) lleva `exp` y `sig` (HMAC) y vale una hora; cada lectura
+        de la reserva genera uno nuevo. Un enlace inválido o vencido, o un comprobante que no es boleta ni factura
+        vigente, responde 404.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: exp
+          in: query
+          required: true
+          schema: { type: integer, description: Vencimiento en segundos Unix. }
+        - name: sig
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
   /public/waivers/{token}:
     get:
       operationId: getWaiverForm
@@ -508,7 +545,11 @@ paths:
       operationId: receiveStripeWebhook
       tags: [Webhooks]
       summary: Eventos de Stripe
-      description: Valida `Stripe-Signature`, guarda el evento y responde 2xx aunque ya estuviera procesado.
+      description: |
+        Valida `Stripe-Signature` sobre el cuerpo crudo (400 si falta o no coincide), guarda el evento en
+        `WebhookEvent` (idempotente por `eventId`) y responde 200 aunque ya estuviera procesado. Eventos usados:
+        `payment_intent.succeeded|payment_failed|canceled|requires_action`, `refund.created|updated|failed` y
+        `charge.dispute.created|updated|closed|funds_withdrawn|funds_reinstated`. 503 si el webhook no está configurado.
       security: []
       requestBody:
         required: true
@@ -518,11 +559,20 @@ paths:
       responses:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
+        '409':
+          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara). No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /webhooks/culqi:
     post:
       operationId: receiveCulqiWebhook
       tags: [Webhooks]
       summary: Eventos de Culqi
+      description: |
+        Valida la firma HMAC-SHA256 del cuerpo en `x-culqi-signature` (400 si falta o no coincide; 503 si no hay
+        secreto configurado). El API no confía en el contenido del evento: vuelve a consultar el cargo a Culqi.
+        El esquema de firma está pendiente de verificar contra la documentación oficial de Culqi.
       security: []
       requestBody:
         required: true
@@ -532,6 +582,11 @@ paths:
       responses:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
+        '409':
+          description: Evento fuera de orden; ver `receiveStripeWebhook`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # -------------------------------------------------------------------- Auth
   /auth/google:
@@ -1278,6 +1333,11 @@ paths:
       operationId: issueDocument
       tags: [Documents]
       summary: Emitir el comprobante de una reserva
+      description: |
+        Asigna serie y correlativo, calcula base e IGV y deja el envío a `desertica-billing` en una cola con
+        reintentos (la misma `externalId` en cada uno). Responde 202 con el comprobante en `PENDING`: su estado
+        final llega después. 409 si no hay empresa o serie configuradas, si el pago ya tiene comprobante o si no
+        queda nada por documentar.
       x-permission: documents:issue
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1303,6 +1363,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
 
   # ---------------------------------------------------------------- Payments
@@ -1362,8 +1423,8 @@ paths:
       summary: Reembolsar un pago
       description: |
         Ejecuta la devolución en la pasarela (o la registra si el pago fue manual), actualiza la reserva y
-        emite la nota de crédito si había comprobante. Los montos superiores al tope del operador requieren
-        `payments:refund-any`.
+        emite la nota de crédito si había comprobante. Si lo ya devuelto de la reserva (más lo pendiente) más este
+        monto supera `operatorRefundLimitCents`, hace falta `payments:refund-any` (403 si no se tiene).
       x-permission: payments:refund
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1385,6 +1446,27 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Refund' }
         '403': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /refunds/{id}/complete:
+    post:
+      operationId: completeRefund
+      tags: [Payments]
+      summary: Confirmar un reembolso manual pendiente
+      description: |
+        Para pagos manuales (efectivo, transferencia, Yape) la cancelación deja el reembolso en `PENDING`: el
+        staff devuelve el dinero por su cuenta y lo confirma aquí. Actualiza `refundedCents` del pago y de la
+        reserva. Los reembolsos de pasarela los ejecuta el API solo y no se confirman a mano.
+      x-permission: payments:refund
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Reembolso confirmado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /refunds:
     get:
@@ -1447,6 +1529,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Dispute' }
+        '404': { $ref: '#/components/responses/Error' }
     patch:
       operationId: updateDispute
       tags: [Payments]
@@ -1467,6 +1550,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Dispute' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /disputes/{id}/evidence:
     get:
       operationId: downloadDisputeEvidence
@@ -1482,6 +1567,7 @@ paths:
           content:
             application/zip:
               schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
 
   # --------------------------------------------------------------- Documents
   /documents:
@@ -1547,6 +1633,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/void:
     post:
       operationId: voidDocument
@@ -1563,13 +1651,15 @@ paths:
               type: object
               required: [reason]
               properties:
-                reason: { type: string }
+                reason: { type: string, maxLength: 100 }
       responses:
         '202':
           description: Anulación encolada
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/credit-note:
     post:
       operationId: createCreditNote
@@ -1594,6 +1684,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
   /documents/{id}/files/{kind}:
     get:
       operationId: downloadDocumentFile
@@ -2711,8 +2803,16 @@ components:
       required: [kind, token, email]
       properties:
         kind: { $ref: '#/components/schemas/PaymentKind' }
-        token: { type: string, description: Token generado por Culqi.js en el navegador. }
+        token: { type: string, description: Token generado por Culqi.js en el navegador. Nunca un número de tarjeta. }
         email: { type: string, format: email }
+        paymentId:
+          type: string
+          format: uuid
+          description: Pago `REQUIRES_ACTION` que se continúa tras la autenticación 3DS (con `authentication3DS`).
+        authentication3DS:
+          type: object
+          additionalProperties: true
+          description: Parámetros que devolvió la autenticación 3DS en el navegador (Culqi3DS).
     StripeIntent:
       type: object
       required: [paymentId, clientSecret, publishableKey, amountCents, currency]
@@ -2730,7 +2830,9 @@ components:
         status: { $ref: '#/components/schemas/PaymentStatus' }
         action:
           type: object
-          description: Presente cuando el banco exige autenticación 3DS.
+          description: |
+            Presente cuando el banco exige autenticación 3DS. El navegador la ejecuta con Culqi3DS y reenvía el
+            mismo `token` con `paymentId` y `authentication3DS`. `parameters` trae `amountCents`, `currency` y `email`.
           properties:
             type: { type: string, enum: [THREE_DS] }
             parameters: { type: object, additionalProperties: true }
@@ -3030,6 +3132,9 @@ components:
         holdMinutes: { type: integer, minimum: 1, maximum: 120, default: 15, description: Duración del bloqueo de cupo. }
         operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
+        autoIssueDocuments: { type: boolean, default: true, description: Emitir el comprobante automáticamente al confirmarse un pago (y la nota de crédito al reembolsar). }
+        exchangeRateUsdPen: { type: string, example: '3.7500', description: Tipo de cambio SUNAT USD→PEN vigente para comprobantes en USD (si falta se usa EXCHANGE_RATE_FALLBACK). }
+        exchangeRates: { type: object, additionalProperties: { type: string }, description: 'Tipos de cambio por fecha, p. ej. {"2026-10-04":"3.7500"}; tiene prioridad sobre `exchangeRateUsdPen`.' }
       additionalProperties: true
     SettingsInput:
       type: object
