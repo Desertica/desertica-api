@@ -17,7 +17,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../auth/auth.types';
 import { UpdateDisputeDto } from './dto/admin.dto';
-import type { Effects } from './payment-events.service';
+import { SETTLED, type Effects } from './payment-state';
 import { REFUND_INCLUDE, toDisputeDto } from './payments.mappers';
 import type { GatewayDispute } from './providers/payment-gateway';
 
@@ -197,6 +197,13 @@ export class DisputesService {
     options: { createOnly?: boolean } = {},
   ): Promise<void> {
     await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${payment.bookingId} FOR UPDATE`;
+    const settled = await tx.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+    });
+    if (!SETTLED.includes(settled.status)) {
+      // Evento fuera de orden: la disputa llegó antes que la confirmación del cobro.
+      throw new ConflictException('The payment is not settled yet');
+    }
     const existing = await tx.dispute.findUnique({
       where: {
         provider_providerRef: { provider, providerRef: gw.providerRef },

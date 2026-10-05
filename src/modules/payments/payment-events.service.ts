@@ -1,7 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { pendingCents } from '../../common/money';
 import { Prisma } from '../../generated/prisma/client';
-import type { PaymentProvider } from '../../generated/prisma/client';
+import type {
+  PaymentProvider,
+  PaymentStatus,
+} from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { BookingPaymentsService } from '../bookings/booking-payments.service';
@@ -11,28 +14,14 @@ import { GatewayRegistry } from './gateway.registry';
 import type { GatewayEvent, GatewayPayment } from './providers/payment-gateway';
 import { DisputesService } from './disputes.service';
 import { RefundsService } from './refunds-admin.service';
+import { SETTLED, newEffects, type Effects } from './payment-state';
 import { RefundsExecutor } from './refunds.service';
 import { StaffAlertsService } from '../alerts/staff-alerts.service';
 
 type Tx = Prisma.TransactionClient;
 type PaymentRow = Prisma.PaymentGetPayload<object>;
 
-/** Estados de un pago que ya acreditó dinero: repetir el evento no hace nada. */
-const SETTLED = ['SUCCEEDED', 'PARTIALLY_REFUNDED', 'REFUNDED', 'DISPUTED'];
-const OPEN_PAYMENT = ['PENDING', 'REQUIRES_ACTION'];
-
-/** Lo que hay que hacer cuando la transacción ya se confirmó. */
-export interface Effects {
-  error?: string;
-  paymentId?: string;
-  confirmedBookingId?: string;
-  /** Pago que acaba de quedar acreditado (para emitir su comprobante). */
-  settledPaymentId?: string;
-  refundIds: string[];
-  alerts: { code: string; data: Record<string, unknown>; bookingId?: string }[];
-}
-
-export const newEffects = (): Effects => ({ refundIds: [], alerts: [] });
+const OPEN_PAYMENT: PaymentStatus[] = ['PENDING', 'REQUIRES_ACTION'];
 
 /**
  * Procesa eventos de las pasarelas: el estado de un pago lo fija esto (el
@@ -183,9 +172,7 @@ export class PaymentEventsService {
     }
     fx.paymentId = found.id;
     let payment = found;
-    if (gw.disputed) {
-      await this.disputes.ensureOpen(tx, found, provider, fx);
-    }
+
     if (!payment.providerRef && gw.providerRef) {
       payment = await tx.payment.update({
         where: { id: payment.id },
@@ -196,14 +183,24 @@ export class PaymentEventsService {
     switch (gw.status) {
       case 'SUCCEEDED':
         await this.settle(tx, payment, gw, fx);
-        return;
-      case 'FAILED':
-        if (OPEN_PAYMENT.includes(payment.status)) {
-          const code = gw.failureCode ?? 'payment_failed';
-          await tx.payment.update({
+        if (gw.disputed) {
+          // Culqi marca la disputa en el propio cargo; solo con el pago ya acreditado.
+          const settled = await tx.payment.findUniqueOrThrow({
             where: { id: payment.id },
-            data: { status: 'FAILED', failureCode: code },
           });
+          if (SETTLED.includes(settled.status)) {
+            await this.disputes.ensureOpen(tx, settled, provider, fx);
+          }
+        }
+        return;
+      case 'FAILED': {
+        // Condicionado al estado: un fallo atrasado nunca pisa un éxito.
+        const code = gw.failureCode ?? 'payment_failed';
+        const changed = await tx.payment.updateMany({
+          where: { id: payment.id, status: { in: OPEN_PAYMENT } },
+          data: { status: 'FAILED', failureCode: code },
+        });
+        if (changed.count > 0) {
           await this.audit.record(
             {
               action: 'payment.failed',
@@ -216,12 +213,13 @@ export class PaymentEventsService {
           );
         }
         return;
-      case 'CANCELLED':
-        if (OPEN_PAYMENT.includes(payment.status)) {
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: { status: 'CANCELLED' },
-          });
+      }
+      case 'CANCELLED': {
+        const changed = await tx.payment.updateMany({
+          where: { id: payment.id, status: { in: OPEN_PAYMENT } },
+          data: { status: 'CANCELLED' },
+        });
+        if (changed.count > 0) {
           await this.audit.record(
             {
               action: 'payment.cancelled',
@@ -234,13 +232,12 @@ export class PaymentEventsService {
           );
         }
         return;
+      }
       case 'REQUIRES_ACTION':
-        if (payment.status === 'PENDING') {
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: { status: 'REQUIRES_ACTION' },
-          });
-        }
+        await tx.payment.updateMany({
+          where: { id: payment.id, status: 'PENDING' },
+          data: { status: 'REQUIRES_ACTION' },
+        });
         return;
       default:
         return; // PENDING: nada que cambiar
@@ -250,10 +247,17 @@ export class PaymentEventsService {
   /** Acredita un cobro exitoso. */
   private async settle(
     tx: Tx,
-    payment: PaymentRow,
+    seen: PaymentRow,
     gw: GatewayPayment,
     fx: Effects,
   ): Promise<void> {
+    // La reserva se bloquea ANTES de decidir y el pago se vuelve a leer: dos
+    // eventos distintos del mismo cobro (ids de evento diferentes) se
+    // serializan aquí y el segundo ve el pago ya acreditado.
+    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${seen.bookingId} FOR UPDATE`;
+    const payment = await tx.payment.findUniqueOrThrow({
+      where: { id: seen.id },
+    });
     if (SETTLED.includes(payment.status)) return;
 
     if (
@@ -292,7 +296,6 @@ export class PaymentEventsService {
       return;
     }
 
-    await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${payment.bookingId} FOR UPDATE`;
     fx.settledPaymentId = payment.id;
     const booking = await tx.booking.findUniqueOrThrow({
       where: { id: payment.bookingId },
