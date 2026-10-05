@@ -6,6 +6,8 @@ import { GatewayRegistry } from './gateway.registry';
 import {
   GatewayError,
   GatewayNotConfiguredError,
+  type GatewayRefund,
+  type PaymentGateway,
 } from './providers/payment-gateway';
 import { StaffAlertsService } from '../alerts/staff-alerts.service';
 import { DocumentsService } from '../documents/documents.service';
@@ -63,6 +65,24 @@ export class RefundsExecutor {
     await this.documents.creditNoteForRefund(tx, refund);
   }
 
+  /**
+   * ¿Ya aplicó la pasarela este reembolso aunque no viéramos la respuesta?
+   * `null` si no se puede saber (la pasarela no informa lo devuelto o no responde).
+   */
+  private async alreadyApplied(
+    gateway: PaymentGateway,
+    payment: { providerRef: string | null; refundedCents: number },
+    amountCents: number,
+  ): Promise<boolean | null> {
+    try {
+      const charge = await gateway.retrievePayment(payment.providerRef!);
+      if (charge.refundedCents === undefined) return null;
+      return charge.refundedCents >= payment.refundedCents + amountCents;
+    } catch {
+      return null;
+    }
+  }
+
   async execute(refundId: string): Promise<ExecuteOutcome> {
     const head = await this.prisma.refund.findUnique({
       where: { id: refundId },
@@ -87,7 +107,7 @@ export class RefundsExecutor {
             });
             if (current.status !== 'PENDING') return 'skipped';
 
-            let result;
+            let result: GatewayRefund;
             try {
               result = await gateway.refund({
                 refundId,
@@ -99,30 +119,61 @@ export class RefundsExecutor {
             } catch (error) {
               const code =
                 error instanceof GatewayError ? error.code : undefined;
-              if (
+              const transient =
                 error instanceof GatewayNotConfiguredError ||
-                (code && TRANSIENT.has(code))
-              ) {
-                this.logger.warn(
-                  `Refund ${refundId} will be retried: ${String(error)}`,
-                );
+                (code !== undefined && TRANSIENT.has(code));
+              if (transient && error instanceof GatewayNotConfiguredError) {
+                return 'retry'; // no se llegó a llamar a la pasarela
+              }
+              if (transient && provider === 'STRIPE') {
+                // Stripe es idempotente por `refund:<id>`: reintentar es seguro.
+                this.logger.warn(`Refund ${refundId} will be retried: ${code}`);
                 return 'retry';
               }
-              await tx.refund.update({
-                where: { id: refundId },
-                data: { status: 'FAILED' },
-              });
-              await this.audit.record(
-                {
-                  action: 'refund.failed',
-                  entity: 'Refund',
-                  entityId: refundId,
-                  before: { status: 'PENDING' },
-                  after: { status: 'FAILED', code: code ?? 'unknown' },
-                },
-                tx,
-              );
-              return 'failed';
+              if (transient) {
+                // Culqi (sin clave de idempotencia verificada): la llamada pudo
+                // aplicarse aunque no se viera la respuesta. Antes de reintentar
+                // se mira el cargo; si no se puede confirmar, no se reintenta a ciegas.
+                const applied = await this.alreadyApplied(
+                  gateway,
+                  head.payment,
+                  head.amountCents,
+                );
+                if (applied === false) {
+                  this.logger.warn(
+                    `Refund ${refundId} will be retried: ${code}`,
+                  );
+                  return 'retry';
+                }
+                if (applied === true) {
+                  result = {
+                    providerRef: `unconfirmed:${refundId}`,
+                    paymentProviderRef: head.payment.providerRef!,
+                    status: 'SUCCEEDED',
+                    amountCents: head.amountCents,
+                  };
+                }
+              }
+              if (!result!) {
+                await tx.refund.update({
+                  where: { id: refundId },
+                  data: { status: 'FAILED' },
+                });
+                await this.audit.record(
+                  {
+                    action: 'refund.failed',
+                    entity: 'Refund',
+                    entityId: refundId,
+                    before: { status: 'PENDING' },
+                    after: {
+                      status: 'FAILED',
+                      code: transient ? 'unconfirmed' : (code ?? 'unknown'),
+                    },
+                  },
+                  tx,
+                );
+                return 'failed';
+              }
             }
 
             if (result.status === 'FAILED') {
@@ -163,7 +214,7 @@ export class RefundsExecutor {
             );
             return result.status === 'SUCCEEDED' ? 'succeeded' : 'skipped';
           },
-          { timeout: 30_000, maxWait: 10_000 },
+          { timeout: 90_000, maxWait: 10_000 },
         )
         .then(async (outcome) => {
           if (outcome === 'failed') {

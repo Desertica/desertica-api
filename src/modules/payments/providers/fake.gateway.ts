@@ -31,6 +31,8 @@ export class FakeGateway implements PaymentGateway {
   failRefunds = false;
   /** Código del error cuando `failRefunds` está activo (`unreachable` se reintenta). */
   refundFailureCode = 'refund_failed';
+  /** El reembolso se aplica pero la respuesta se pierde (`unreachable`): el caso ambiguo. */
+  loseRefundResponse = false;
 
   constructor(readonly provider: 'STRIPE' | 'CULQI') {
     this.currencies = provider === 'STRIPE' ? ['USD'] : ['USD', 'PEN'];
@@ -107,6 +109,13 @@ export class FakeGateway implements PaymentGateway {
   }
 
   refund(input: RefundInput): Promise<GatewayRefund> {
+    if (this.loseRefundResponse) {
+      const charge = this.payments.get(input.paymentProviderRef);
+      if (charge) {
+        charge.refundedCents = (charge.refundedCents ?? 0) + input.amountCents;
+      }
+      return Promise.reject(new GatewayError('Timed out', 'unreachable'));
+    }
     if (this.failRefunds) {
       return Promise.reject(
         new GatewayError('Refund refused', this.refundFailureCode),
