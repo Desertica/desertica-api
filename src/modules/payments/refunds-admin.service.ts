@@ -18,7 +18,7 @@ import { AuditService } from '../audit/audit.service';
 import type { AuthUser } from '../auth/auth.types';
 import { SettingsService } from '../settings/settings.service';
 import { CreateRefundDto } from './dto/admin.dto';
-import type { Effects } from './payment-events.service';
+import { SETTLED, type Effects } from './payment-state';
 import { REFUND_INCLUDE, toRefundDto } from './payments.mappers';
 import type { GatewayRefund } from './providers/payment-gateway';
 import { RefundsExecutor } from './refunds.service';
@@ -278,6 +278,14 @@ export class RefundsService {
       return;
     }
     await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${payment.bookingId} FOR UPDATE`;
+    const settled = await tx.payment.findUniqueOrThrow({
+      where: { id: payment.id },
+    });
+    if (!SETTLED.includes(settled.status)) {
+      // Evento fuera de orden: el cobro todavía no se acredita. Se responde con
+      // error para que la pasarela lo reenvíe cuando ya esté acreditado.
+      throw new ConflictException('The payment is not settled yet');
+    }
 
     if (!refund) {
       // Hecho desde el panel de la pasarela: no hay fila nuestra.
