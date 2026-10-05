@@ -104,7 +104,10 @@ export function checkConformance(
   url: string,
   res: ResponseLike,
 ): string[] {
-  if (url.startsWith('/api/docs')) return [];
+  // Los preflight CORS no forman parte del contrato.
+  if (url.startsWith('/api/docs') || method.toUpperCase() === 'OPTIONS') {
+    return [];
+  }
   const op = findOperation(method, url);
   const label = `${method.toUpperCase()} ${url.split('?')[0]} -> ${res.status}`;
   if (!op) {
@@ -121,6 +124,15 @@ export function checkConformance(
     ];
   }
   const contentType = res.headers['content-type'] ?? '';
+  // Una respuesta en otro tipo de medio documentado (p. ej. `text/csv`) no es JSON.
+  const mediaType = contentType.split(';')[0].trim();
+  if (
+    mediaType &&
+    mediaType !== 'application/json' &&
+    documented?.content?.[mediaType]
+  ) {
+    return [];
+  }
   const validate = validatorFor(op, res.status);
   if (!validate) {
     // Sin esquema JSON documentado (204, binarios, solo descripción).

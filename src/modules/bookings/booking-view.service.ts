@@ -1,27 +1,40 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { publicDocumentUrl } from '../../common/signed-link';
+import { EnvVars } from '../../config/env.validation';
 import { paginated, skipTake } from '../../common/pagination/pagination';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { TourTitlesService } from '../cms/tour-titles.service';
 import {
   bookingPending,
   toBookingDto,
   toBookingSummary,
 } from './booking.mappers';
-import { BookingQuery } from './dto/booking.dto';
+import { BookingQuery, PaymentStatusFilter } from './dto/booking.dto';
+import { paymentOptionsFor } from './payment-options';
 
 type Db = PrismaService | Prisma.TransactionClient;
 
 @Injectable()
 export class BookingViewService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly titles: TourTitlesService,
+    private readonly config: ConfigService<EnvVars, true>,
+  ) {}
 
   readonly summaryInclude = {
-    departure: { include: { tourRef: { select: { slug: true } } } },
+    departure: {
+      include: { tourRef: { select: { slug: true, title: true } } },
+    },
     customer: true,
   } satisfies Prisma.BookingInclude;
 
   readonly fullInclude = {
-    departure: { include: { tourRef: { select: { slug: true } } } },
+    departure: {
+      include: { tourRef: { select: { slug: true, title: true } } },
+    },
     customer: true,
     passengers: { orderBy: { id: 'asc' as const } },
     payments: { orderBy: { createdAt: 'asc' as const } },
@@ -32,11 +45,42 @@ export class BookingViewService {
     waivers: { orderBy: { createdAt: 'asc' as const } },
   } satisfies Prisma.BookingInclude;
 
+  /** Compara lo cobrado con el total de la misma fila (referencias de campo de Prisma). */
+  private paymentStatusWhere(
+    status: PaymentStatusFilter | undefined,
+  ): Prisma.BookingWhereInput {
+    const total = this.prisma.booking.fields.totalCents;
+    switch (status) {
+      case 'UNPAID':
+        return { paidCents: 0 };
+      case 'PARTIAL':
+        return { paidCents: { gt: 0, lt: total } };
+      case 'PAID':
+        return { paidCents: { gte: total } };
+      default:
+        return {};
+    }
+  }
+
   async list(q: BookingQuery) {
     const search = q.q?.trim();
     const where: Prisma.BookingWhereInput = {
       ...(q.status ? { status: q.status } : {}),
       ...(q.departureId ? { departureId: q.departureId } : {}),
+      ...(q.source ? { source: q.source } : {}),
+      ...(q.currency ? { currency: q.currency } : {}),
+      ...(q.customerId ? { customerId: q.customerId } : {}),
+      ...this.paymentStatusWhere(q.paymentStatus),
+      ...(q.waiverStatus === 'PENDING'
+        ? { waivers: { some: { status: 'PENDING' as const } } }
+        : q.waiverStatus === 'SIGNED'
+          ? {
+              waivers: {
+                some: {},
+                none: { status: 'PENDING' as const },
+              },
+            }
+          : {}),
       ...(q.tourRefId || q.from || q.to
         ? {
             departure: {
@@ -84,7 +128,14 @@ export class BookingViewService {
       }),
       this.prisma.booking.count({ where }),
     ]);
-    return paginated(rows.map(toBookingSummary), q, total);
+    const titles = await this.titles.forTours(
+      rows.map((r) => r.departure.tourRef),
+    );
+    return paginated(
+      rows.map((r) => toBookingSummary(r, titles)),
+      q,
+      total,
+    );
   }
 
   async get(id: string, db: Db = this.prisma) {
@@ -97,7 +148,10 @@ export class BookingViewService {
       where: { status: 'PENDING', payment: { bookingId: id } },
       _sum: { amountCents: true },
     });
-    return toBookingDto(row, { refundDueCents: pending._sum.amountCents ?? 0 });
+    return toBookingDto(row, {
+      refundDueCents: pending._sum.amountCents ?? 0,
+      titles: await this.titles.forTours([row.departure.tourRef]),
+    });
   }
 
   toPublicById(bookingId: string) {
@@ -109,7 +163,10 @@ export class BookingViewService {
     const b = await db.booking.findUnique({
       where: { id: bookingId },
       include: {
-        departure: { include: { tourRef: { select: { slug: true } } } },
+        departure: {
+          include: { tourRef: { select: { slug: true, title: true } } },
+        },
+        passengers: { orderBy: { id: 'asc' } },
         waivers: {
           include: { passenger: true },
           orderBy: { createdAt: 'asc' },
@@ -125,6 +182,7 @@ export class BookingViewService {
       status: b.status,
       tourSlug: b.departure.tourRef.slug,
       startsAt: b.departure.startsAt,
+      format: b.departure.format,
       meetingPoint: b.departure.meetingPoint,
       adults: b.adults,
       children: b.children,
@@ -133,6 +191,11 @@ export class BookingViewService {
       paidCents: b.paidCents,
       pendingCents: bookingPending(b),
       depositCents: b.depositCents,
+      passengers: b.passengers.map((p) => ({
+        firstName: p.firstName,
+        lastName: p.lastName,
+      })),
+      paymentOptions: paymentOptionsFor(b),
       cancellationTiers: snapshot.tiers ?? [],
       waivers:
         b.status === 'CANCELLED'
@@ -144,7 +207,28 @@ export class BookingViewService {
                 : null,
               status: w.status,
             })),
-      documents: [] as { docType: string; number: string; pdfUrl: string }[],
+      documents: await this.publicDocuments(db, b.id),
     };
+  }
+
+  /** Comprobantes con PDF guardado, con un enlace de descarga firmado y de corta vida. */
+  private async publicDocuments(db: Db, bookingId: string) {
+    const docs = await db.document.findMany({
+      where: {
+        bookingId,
+        docType: { in: ['BOLETA', 'FACTURA'] },
+        status: { in: ['ISSUED', 'ACCEPTED'] },
+        pdfKey: { not: null },
+      },
+      include: { series: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const api = this.config.get('PUBLIC_API_URL', { infer: true });
+    const secret = this.config.get('JWT_ACCESS_SECRET', { infer: true });
+    return docs.map((d) => ({
+      docType: d.docType,
+      number: `${d.series.prefix}-${String(d.number).padStart(8, '0')}`,
+      pdfUrl: publicDocumentUrl(api, secret, d.id),
+    }));
   }
 }

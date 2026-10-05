@@ -13,6 +13,19 @@ export const DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN ?? 'desertica.pe';
 /** Páginas del CMS simuladas: `terms`, `privacy` y `cancellation` existen en cualquier idioma. */
 const fakeCms = {
   listTours: () => Promise.resolve([]),
+  /** Todo tour tiene descargo en cualquier idioma, salvo los slugs `sin-descargo-*` y `sin-tour-*`. */
+  getTourWaiver: (slug: string, locale: string) =>
+    Promise.resolve(
+      slug.startsWith('sin-tour-')
+        ? null
+        : {
+            slug,
+            title: `Tour ${slug} (${locale})`,
+            waiverBody: slug.startsWith('sin-descargo-')
+              ? null
+              : `# Descargo de ${slug}\n\nTexto del descargo en ${locale}.`,
+          },
+    ),
   getPage: (slug: string) =>
     Promise.resolve(
       ['terms', 'privacy', 'cancellation', 'cookies', 'conduct'].includes(slug)
@@ -44,6 +57,20 @@ export function uniqueEmail(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@${DOMAIN}`;
 }
 
+/** Valor de la cookie `desertica_refresh` que fijó la respuesta. */
+export function refreshTokenFrom(res: {
+  headers: Record<string, any>;
+}): string {
+  const cookies = ([] as string[]).concat(res.headers['set-cookie'] ?? []);
+  const cookie = cookies.find((c) => c.startsWith('desertica_refresh='));
+  if (!cookie) throw new Error('La respuesta no fijó desertica_refresh');
+  return decodeURIComponent(cookie.split(';')[0].split('=')[1]);
+}
+
+export const refreshCookie = (token: string) => ({
+  Cookie: `desertica_refresh=${encodeURIComponent(token)}`,
+});
+
 export interface TestSession {
   accessToken: string;
   refreshToken: string;
@@ -68,12 +95,11 @@ export async function loginAs(
     .expect(200);
   const body = res.body as {
     accessToken: string;
-    refreshToken: string;
     user: { id: string; email: string };
   };
   return {
     accessToken: body.accessToken,
-    refreshToken: body.refreshToken,
+    refreshToken: refreshTokenFrom(res),
     auth: { Authorization: `Bearer ${body.accessToken}` },
     user: body.user,
   };

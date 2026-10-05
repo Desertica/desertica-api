@@ -1,5 +1,6 @@
 import {
   INestApplication,
+  Logger,
   UnprocessableEntityException,
   ValidationError,
   ValidationPipe,
@@ -7,8 +8,10 @@ import {
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
 import { EnvVars } from '../config/env.validation';
+import { captureWebhookRawBody } from '../modules/payments/raw-body';
 import { AllExceptionsFilter } from './filters/all-exceptions.filter';
 import { PrismaExceptionFilter } from './filters/prisma-exception.filter';
+import { requestContext } from './request-context';
 
 export function parseOrigins(raw: string): string[] {
   return raw
@@ -35,14 +38,29 @@ export function configureApp(app: INestApplication): void {
     set: (key: string, value: unknown) => void;
     disable: (key: string) => void;
   };
-  http.set('trust proxy', config.get('TRUST_PROXY', { infer: true }));
+  // Cuántos saltos de proxy se confían para leer la IP real (`req.ip`) de `X-Forwarded-For`; Express
+  // cuenta desde el final de la lista, así que lo que el cliente antepone no cuenta como IP.
+  const trustProxy = config.get('TRUST_PROXY', { infer: true });
+  http.set('trust proxy', trustProxy);
+  if (config.get('NODE_ENV', { infer: true }) === 'production') {
+    if (trustProxy === 0) {
+      new Logger('configureApp').warn(
+        'TRUST_PROXY=0 in production: every visitor will share the proxy address and the per-IP limits will not work. Set the number of proxy hops (2 behind Cloudflare and Coolify).',
+      );
+    }
+  }
   http.disable('x-powered-by');
 
   app.use(helmet());
+  app.use(requestContext);
+  captureWebhookRawBody(app);
   app.enableCors({
+    // Credenciales (cookie del refresh) solo para la lista explícita; nunca `*`.
     origin: parseOrigins(config.get('CORS_ORIGINS', { infer: true })),
+    credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: [
+      'Accept-Language',
       'Authorization',
       'Content-Type',
       'Idempotency-Key',

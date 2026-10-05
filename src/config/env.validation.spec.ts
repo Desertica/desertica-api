@@ -36,8 +36,74 @@ describe('envSchema', () => {
       TURNSTILE_SECRET_KEY: 'ts',
       GOOGLE_CLIENT_ID: 'gid',
       PUBLIC_WEB_URL: 'https://desertica.pe',
+      MAIL_DRIVER: 'smtp',
+      SMTP_HOST: 'smtp-relay.gmail.com',
+      MAIL_FROM: 'Desértica <reservas@desertica.pe>',
     });
     expect(error).toBeUndefined();
+  });
+
+  describe('mail', () => {
+    const smtp = {
+      ...base,
+      MAIL_DRIVER: 'smtp',
+      SMTP_HOST: 'smtp-relay.gmail.com',
+      MAIL_FROM: 'Desértica <reservas@desertica.pe>',
+    };
+
+    it('defaults to the log driver outside production', () => {
+      expect(
+        (envSchema.validate(base).value as { MAIL_DRIVER: string }).MAIL_DRIVER,
+      ).toBe('log');
+    });
+
+    it('requires the host and sender with the smtp driver', () => {
+      const { error } = envSchema.validate(
+        { ...base, MAIL_DRIVER: 'smtp' },
+        { abortEarly: false },
+      );
+      expect(error?.message).toMatch(/SMTP_HOST/);
+      expect(error?.message).toMatch(/MAIL_FROM/);
+      expect(envSchema.validate(smtp).error).toBeUndefined();
+    });
+
+    it('requires the smtp driver and TLS in production', () => {
+      const prod = {
+        ...smtp,
+        NODE_ENV: 'production',
+        CORS_ORIGINS: 'https://desertica.pe',
+        JWT_ACCESS_SECRET: 'x'.repeat(40),
+        TURNSTILE_SECRET_KEY: 'ts',
+        GOOGLE_CLIENT_ID: 'gid',
+        PUBLIC_WEB_URL: 'https://desertica.pe',
+      };
+      expect(envSchema.validate(prod).error).toBeUndefined();
+      expect(
+        envSchema.validate({ ...prod, MAIL_DRIVER: 'log' }).error?.message,
+      ).toMatch(/MAIL_DRIVER/);
+      expect(
+        envSchema.validate({ ...prod, SMTP_REQUIRE_TLS: false }).error?.message,
+      ).toMatch(/SMTP_REQUIRE_TLS/);
+      const { MAIL_DRIVER: _omit, ...withoutDriver } = prod;
+      void _omit;
+      expect(envSchema.validate(withoutDriver).error?.message).toMatch(
+        /MAIL_DRIVER/,
+      );
+    });
+
+    it('wants the SMTP user and password together', () => {
+      expect(
+        envSchema.validate({ ...smtp, SMTP_USER: 'bot@desertica.pe' }).error
+          ?.message,
+      ).toMatch(/SMTP_PASSWORD/);
+      expect(
+        envSchema.validate({
+          ...smtp,
+          SMTP_USER: 'bot@desertica.pe',
+          SMTP_PASSWORD: 'secret',
+        }).error,
+      ).toBeUndefined();
+    });
   });
 
   it('forbids the fake Google login in production', () => {

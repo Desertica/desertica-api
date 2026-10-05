@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { Params } from 'nestjs-pino';
+import { redactUrl } from './sanitize';
 
 /** Cabeceras y campos que nunca deben llegar a los logs. */
 export const REDACT_PATHS = [
@@ -10,6 +11,9 @@ export const REDACT_PATHS = [
   'req.headers["stripe-signature"]',
   'res.headers["set-cookie"]',
 ];
+
+/** Redacción de URLs: vive en `sanitize.ts` y se reexporta aquí. */
+export { redactUrl };
 
 export function buildLoggerParams(options: {
   level: string;
@@ -40,7 +44,7 @@ export function buildLoggerParams(options: {
         req: (req: { id: string; method: string; url: string }) => ({
           id: req.id,
           method: req.method,
-          url: req.url,
+          url: redactUrl(req.url),
         }),
       },
       ...(options.pretty

@@ -46,6 +46,7 @@ src/
     time/lima.ts          America/Lima: fechas locales, meses, días hábiles
     cache/                KeyValueStore (memoria o Redis) y almacén del rate limit
     idempotency/          Idempotency-Key (fila y efecto en la misma transacción)
+    queue/                Cola en memoria para trabajo que no debe retrasar la respuesta
     captcha/, pipes/, pagination/, filters/, logger/
   modules/
     auth/                 Login con Google, JWT, refresh con rotación, guard, permisos
@@ -56,6 +57,8 @@ src/
                           disponibilidad pública y cotización
     bookings/             Bloqueo de cupo, reservas web y manuales, pagos manuales, enlaces de
                           pago, cancelación, reprogramación, vencimientos
+    admin/                Empresa y series, bloqueos de correos e IP, panel y reporte de ventas,
+                          mensajes de contacto
     customers/, compliance/, notifications/
 test/                     e2e contra Postgres; cada respuesta se valida contra openapi.yaml
 prisma/                   schema, migraciones (con triggers de solo inserción) y seed
@@ -73,7 +76,39 @@ Crear un bloqueo (`Hold`), una reserva manual o reprogramar toma `SELECT … FOR
 
 ### Correo
 
-`Mailer` es una interfaz; el driver actual (`LogMailer`) escribe en el log. Los enlaces usan `PUBLIC_WEB_URL` y las rutas de `modules/bookings/links.ts` (`/booking/<ref>?token=`, `/waiver/<token>`, `/pay/<token>`).
+`Mailer` es una interfaz con dos drivers que se eligen con `MAIL_DRIVER`:
+
+- `log` (por defecto fuera de producción): `LogMailer` escribe el correo, con sus enlaces y tokens, en el log. Solo para desarrollo y pruebas.
+- `smtp` (obligatorio en producción): `SmtpMailer` (nodemailer) con `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_REQUIRE_TLS`, `SMTP_USER`/`SMTP_PASSWORD` (opcionales, van juntos) y `MAIL_FROM`. Sirve el relay de Google Workspace: `smtp-relay.gmail.com`, puerto 587 con STARTTLS, autorizando la IP del servidor en la consola de Workspace (o `smtp.gmail.com` con una contraseña de aplicación). Para probar en local, Mailpit en `localhost:1025` con `SMTP_REQUIRE_TLS=false`.
+
+Las plantillas (`modules/notifications/templates/`) describen cada correo como bloques y de ahí salen el texto y el HTML, en español para `es*` y en inglés para el resto según el `locale` de la reserva; los avisos internos van siempre en español. Todo lo que viene de una persona se escapa. Para agregar una plantilla: una función en `booking.ts` o `compliance.ts`, registrarla en `index.ts` y añadir sus datos de ejemplo a `templates.spec.ts` (la prueba falla si falta). Los enlaces usan `PUBLIC_WEB_URL` y las rutas de `modules/bookings/links.ts` (`/booking/<ref>?token=`, `/waiver/<token>`, `/pay/<token>`).
+
+### Descargos de responsabilidad
+
+El texto vive en el CMS (`tour.waiverBody`). `POST /legal-documents` con `kind: WAIVER` y `tourRefId` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
+
+### IP del cliente y trabajo en segundo plano
+
+`req.ip` sale de `X-Forwarded-For` solo hasta `TRUST_PROXY` saltos contados desde el final (2 detrás de Cloudflare y Coolify); con 0 en producción el API avisa al arrancar. "Mi reserva" responde igual de rápido exista o no la reserva porque la búsqueda y el envío van a `BackgroundQueue` (en memoria: un reinicio pierde lo pendiente, el cliente puede volver a pedir el enlace).
+
+### Pagos por pasarela
+
+Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payments/providers/payment-gateway.ts`) con tres adaptadores: `StripeGateway` (PaymentIntents con métodos automáticos para Apple Pay y Google Pay; solo USD), `CulqiGateway` (cargo con el token de Culqi.js; USD y PEN) y `FakeGateway` (`PAYMENT_GATEWAY_MODE=fake`, solo desarrollo y pruebas).
+
+- **Flujo Stripe**: `createBookingStripeIntent` crea un `Payment` en `PENDING` y devuelve `clientSecret`; el navegador confirma con Stripe.js; **solo el webhook** (`/api/webhooks/stripe`) acredita el pago.
+- **Flujo Culqi**: el navegador obtiene el token con Culqi.js y llama `createBookingCulqiCharge`; el API cobra. Si el banco pide 3DS, la respuesta trae `action: THREE_DS`: el navegador ejecuta Culqi3DS y reenvía el mismo token con `paymentId` y `authentication3DS`. El resultado servidor a servidor de Culqi y su webhook pasan por el mismo procesador (`PaymentEventsService`), idempotente por `WebhookEvent (provider, eventId)`.
+- **Importe y moneda** salen siempre de la reserva o del enlace, nunca del cliente. Un evento con importe o moneda distintos al `Payment` se rechaza (`amount_mismatch`) y avisa al staff.
+- **Pago tardío**: un pago confirmado sobre una reserva vencida por falta de pago (`payment_timeout`) la reactiva si la salida sigue abierta y hay cupo; si no, o si una persona la canceló, se crea un `Refund` automático y se avisa al staff. Un pago de más (dos cobros simultáneos) reembolsa el excedente.
+- **Webhooks a registrar**: ver "Pasos manuales" del informe de la Ola 2. Las firmas se validan sobre el cuerpo crudo (`modules/payments/raw-body.ts`).
+
+### Comprobantes
+
+`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local, `DOCUMENT_STORAGE_DIR`, fuera de Git) y sigue el estado hasta que SUNAT resuelve.
+
+- Emisión automática al confirmarse un pago y nota de crédito automática al reembolsar (`Setting.autoIssueDocuments`, por defecto activo). Los pagos manuales los recoge el barrido del worker.
+- Tipo de cambio: `Setting.exchangeRates` (por fecha) → `Setting.exchangeRateUsdPen` → `EXCHANGE_RATE_FALLBACK` (`3.7500`, no es el oficial: el contador define la fuente).
+- El cliente baja el PDF con el enlace firmado de `PublicBooking.documents` (`GET /public/documents/{id}/pdf?exp&sig`, vale una hora).
+- El worker corre cada `DOCUMENT_WORKER_SECONDS` (15) con un candado de Postgres; el certificado digital y la clave SOL no existen en este repo.
 
 ## Prisma 7
 
@@ -126,7 +161,9 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `DATABASE_URL` | Conexión PostgreSQL (obligatoria) |
 | `REDIS_URL` | Opcional. Sin ella el rate limit y las cachés usan memoria (una sola instancia) |
 | `CORS_ORIGINS` | Orígenes permitidos separados por coma (obligatoria en producción) |
-| `TRUST_PROXY` | Saltos de proxy confiables para leer la IP real |
+| `TRUST_PROXY` | Saltos de proxy confiables para leer la IP real (0 a 10) |
+| `REFRESH_COOKIE_SECURE` | Atributo `Secure` de la cookie `desertica_refresh`; solo se puede apagar fuera de producción |
+| `MAIL_DRIVER`, `SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO` | Correo saliente (ver "Correo"); producción exige `smtp` con TLS |
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
 | `LOG_LEVEL` | Nivel de log (pino, JSON en producción) |
 | `JWT_ACCESS_SECRET`, `GOOGLE_CLIENT_ID`, `ALLOWED_EMAIL_DOMAIN` | Auth del staff |
