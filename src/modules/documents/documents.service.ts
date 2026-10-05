@@ -421,12 +421,16 @@ export class DocumentsService {
         ) {
           return false;
         }
-        const totalCents = payment.amountCents - payment.refundedCents;
-        if (totalCents <= 0) return false;
         const booking = await tx.booking.findUniqueOrThrow({
           where: { id: head.bookingId },
           include: { departure: { include: { tourRef: true } } },
         });
+        // Lo que ya cubre un comprobante de toda la reserva no se documenta otra vez.
+        const totalCents = Math.min(
+          payment.amountCents - payment.refundedCents,
+          await this.undocumentedCents(tx, booking),
+        );
+        if (totalCents <= 0) return false;
         const billing = booking.billing as BillingData;
         await this.createInTx(tx, {
           booking,
