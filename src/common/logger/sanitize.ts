@@ -9,7 +9,7 @@ const TOKEN_PATHS = /(\/public\/(?:waivers|payment-links|holds)\/)[^/?#]+/g;
 
 /** Parámetros de consulta que nunca deben registrarse. */
 const SECRET_PARAMS =
-  /([?&](?:token|key|secret|code|password|signature)=)[^&#]*/gi;
+  /([?&](?:token|key|secret|code|password|signature|sig)=)[^&#]*/gi;
 
 export function redactUrl(url: string): string {
   return url

@@ -130,6 +130,20 @@ enum DocumentStatus {
   ERROR
 }
 
+enum DocumentJobKind {
+  /// Emitir el comprobante, guardar sus archivos y seguir su estado.
+  SYNC
+  /// Comunicación de baja y seguimiento de su ticket.
+  VOID
+}
+
+enum DocumentJobStatus {
+  PENDING
+  DONE
+  /// Agotó los reintentos: requiere atención del staff.
+  DEAD
+}
+
 enum NotificationChannel {
   EMAIL
   WHATSAPP
@@ -471,6 +485,9 @@ model Payment {
   failureCode      String?
   /// Pago registrado a mano (efectivo, transferencia, Yape personal).
   recordedByUserId String?
+  /// Enlace de pago desde el que se inició el cobro (se marca usado al confirmarse).
+  paymentLinkId    String?
+  paymentLink      PaymentLink?    @relation(fields: [paymentLinkId], references: [id])
   paidAt           DateTime?
   refunds          Refund[]
   disputes         Dispute[]
@@ -480,6 +497,7 @@ model Payment {
 
   @@unique([provider, providerRef])
   @@index([bookingId])
+  @@index([paymentLinkId])
   @@index([status, createdAt])
 }
 
@@ -494,6 +512,7 @@ model PaymentLink {
   expiresAt       DateTime
   usedAt          DateTime?
   createdByUserId String?
+  payments        Payment[]
   createdAt       DateTime    @default(now())
 
   @@index([bookingId])
@@ -610,11 +629,15 @@ model Document {
   pdfKey            String?
   sunatCode         String?
   sunatMessage      String?
+  /// Notas de crédito y débito: código de catálogo SUNAT y texto libre del motivo.
+  reasonCode        String?
+  reason            String?
   /// Para notas de crédito y débito: comprobante que modifican.
   relatedDocumentId String?
   relatedDocument   Document?      @relation("DocumentRelation", fields: [relatedDocumentId], references: [id])
   relatedBy         Document[]     @relation("DocumentRelation")
   refundCreditNote  Refund?        @relation("RefundCreditNote")
+  jobs              DocumentJob[]
   issuedAt          DateTime?
   voidedAt          DateTime?
   createdAt         DateTime       @default(now())
@@ -623,6 +646,26 @@ model Document {
   @@unique([seriesId, number])
   @@index([bookingId])
   @@index([status])
+}
+
+/// Cola (outbox) de trabajos hacia `desertica-billing`, en la base y sin Redis.
+/// Cada reintento usa la misma `externalId` (el id del `Document`).
+model DocumentJob {
+  id            String            @id @default(uuid())
+  documentId    String
+  document      Document          @relation(fields: [documentId], references: [id])
+  kind          DocumentJobKind
+  /// Parámetros del trabajo (p. ej. motivo de la baja y su ticket).
+  payload       Json?
+  status        DocumentJobStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now())
+  lastError     String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([documentId])
 }
 
 // ---------------------------------------------------------------------------

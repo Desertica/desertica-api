@@ -29,6 +29,11 @@ import { PublicBookingsController } from './public-bookings.controller';
     HoldsService,
     PublicAccessService,
   ],
-  exports: [BookingPaymentsService, BookingViewService, ExpiryService],
+  exports: [
+    BookingAccessService,
+    BookingPaymentsService,
+    BookingViewService,
+    ExpiryService,
+  ],
 })
 export class BookingsModule {}
