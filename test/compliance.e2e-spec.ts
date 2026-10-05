@@ -18,12 +18,21 @@ type Body = Record<string, any>;
 // Los textos legales son inmutables y no se pueden borrar: cada corrida usa idiomas propios.
 const letters = 'abcdefghijklmnopqrstuvwxyz';
 const pick = () => letters[Math.floor(Math.random() * 26)];
-const freshLocale = () =>
+const randomLocale = () =>
   `q${pick()}-${pick()}${pick()}`.replace(
     /-(..)/,
     (_m, x: string) => `-${x.toUpperCase()}`,
   );
-const LOCALE = freshLocale();
+// Solo hay unos 17 mil idiomas posibles y los textos no se pueden borrar: se elige
+// uno que todavía no exista en la base para que la prueba no dependa de la suerte.
+const freshLocaleIn = async (db: PrismaService) => {
+  for (;;) {
+    const locale = randomLocale();
+    if ((await db.legalDocument.count({ where: { locale } })) === 0)
+      return locale;
+  }
+};
+let LOCALE: string;
 
 describe('Cumplimiento (e2e)', () => {
   let app: INestApplication<App>;
@@ -36,6 +45,7 @@ describe('Cumplimiento (e2e)', () => {
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
+    LOCALE = await freshLocaleIn(prisma);
     mailer = app.get<LogMailer>(MAILER);
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
@@ -91,7 +101,7 @@ describe('Cumplimiento (e2e)', () => {
     });
 
     it('numbers versions correctly under simultaneous publications', async () => {
-      const locale = freshLocale();
+      const locale = await freshLocaleIn(prisma);
       const results = await Promise.all(
         Array.from({ length: 5 }, () =>
           http()
@@ -126,7 +136,7 @@ describe('Cumplimiento (e2e)', () => {
     });
 
     it('serves the current version of each kind in a language', async () => {
-      const locale = freshLocale();
+      const locale = await freshLocaleIn(prisma);
       expect(
         (
           (
@@ -201,14 +211,13 @@ describe('Cumplimiento (e2e)', () => {
       expect(mail.to).toBe(body.email);
       expect((mail.data as Body).correlative).toBe(created.correlative);
 
-      const list = await http()
-        .get('/api/complaints')
-        .query({ status: 'OPEN', pageSize: 100 })
-        .set(operator.auth)
-        .expect(200);
-      const row = (list.body as { data: Body[] }).data.find(
-        (c) => c.id === created.correlative,
-      )!;
+      // Por id y no buscando en una página de la lista: la base acumula reclamos entre corridas.
+      const row = (
+        await http()
+          .get(`/api/complaints/${created.correlative}`)
+          .set(operator.auth)
+          .expect(200)
+      ).body as Body;
       expect(row).toMatchObject({
         kind: 'RECLAMO',
         status: 'OPEN',
