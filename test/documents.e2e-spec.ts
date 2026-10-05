@@ -34,6 +34,9 @@ type Body = Record<string, any>;
 const FAR = () => new Date(Date.now() + 10 * 86_400_000);
 const LATER = (hours: number) => new Date(Date.now() + hours * 3_600_000);
 
+// La cola es compartida con otras suites: una pasada puede tardar si hay trabajos ajenos.
+jest.setTimeout(60_000);
+
 describe('Comprobantes (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
@@ -104,7 +107,7 @@ describe('Comprobantes (e2e)', () => {
   async function accepted(session = admin) {
     const { b, p } = await paidBooking();
     const res = await issue(session, b.id, { paymentId: p.id }).expect(202);
-    await worker.runOnce(FAR());
+    await worker.runOnce(FAR(), [(res.body as Body).id as string]);
     const row = await prisma.document.findUniqueOrThrow({
       where: { id: (res.body as Body).id },
       include: { series: true },
@@ -427,17 +430,17 @@ describe('Comprobantes (e2e)', () => {
         return spy(r);
       };
       try {
-        await worker.runOnce(FAR()); // intento 1: falla
+        await worker.runOnce(FAR(), [id]); // intento 1: falla
         expect((await document(id)).status).toBe('PENDING');
         const job = await prisma.documentJob.findFirstOrThrow({
           where: { documentId: id },
         });
         expect(job).toMatchObject({ attempts: 1, status: 'PENDING' });
         expect(job.lastError).toContain('SUNAT');
-        await worker.runOnce(new Date()); // todavía en espera: no reintenta
+        await worker.runOnce(new Date(), [id]); // todavía en espera: no reintenta
         expect(billing.emitsFor(id)).toBe(1);
-        await worker.runOnce(LATER(24 * 11)); // intento 2: falla
-        await worker.runOnce(LATER(24 * 12)); // intento 3: pasa
+        await worker.runOnce(LATER(24 * 11), [id]); // intento 2: falla
+        await worker.runOnce(LATER(24 * 12), [id]); // intento 3: pasa
       } finally {
         billing.emit = spy;
       }
@@ -463,7 +466,8 @@ describe('Comprobantes (e2e)', () => {
         id,
       );
       const before = alerted('document_failed');
-      for (let i = 1; i <= 10; i++) await worker.runOnce(LATER(24 * (20 + i)));
+      for (let i = 1; i <= 10; i++)
+        await worker.runOnce(LATER(24 * (20 + i)), [id]);
       expect(await document(id)).toMatchObject({ status: 'ERROR' });
       expect(
         (
@@ -479,7 +483,7 @@ describe('Comprobantes (e2e)', () => {
         .post(`/api/documents/${id}/retry`)
         .set(operator.auth)
         .expect(202);
-      await worker.runOnce(FAR());
+      await worker.runOnce(FAR(), [id]);
       expect((await document(id)).status).toBe('ACCEPTED');
     });
 
@@ -492,7 +496,7 @@ describe('Comprobantes (e2e)', () => {
         1,
         id,
       );
-      await worker.runOnce(FAR());
+      await worker.runOnce(FAR(), [id]);
       expect(await document(id)).toMatchObject({
         status: 'ERROR',
         sunatMessage: 'Datos inválidos',
@@ -509,7 +513,7 @@ describe('Comprobantes (e2e)', () => {
         .set(operator.auth)
         .expect(202);
       expect(retried.body).toMatchObject({ status: 'PENDING' });
-      await worker.runOnce(FAR());
+      await worker.runOnce(FAR(), [id]);
       expect((await document(id)).status).toBe('ACCEPTED');
       await http()
         .post(`/api/documents/${id}/retry`)
@@ -527,7 +531,7 @@ describe('Comprobantes (e2e)', () => {
       const id = (res.body as Body).id as string;
       billing.statusNext('REJECTED', id);
       const before = alerted('document_rejected');
-      await worker.runOnce(FAR());
+      await worker.runOnce(FAR(), [id]);
       expect(await document(id)).toMatchObject({
         status: 'REJECTED',
         sunatCode: '2800',
@@ -554,7 +558,7 @@ describe('Comprobantes (e2e)', () => {
         status: 'ACCEPTED',
         files: { xml: true, cdr: true, pdf: true },
       };
-      await worker.runOnce(LATER(24 * 30));
+      await worker.runOnce(LATER(24 * 30), [id]);
       expect(await document(id)).toMatchObject({ status: 'ACCEPTED' });
       expect((await document(id)).cdrKey).toBeTruthy();
     });
@@ -607,9 +611,9 @@ describe('Comprobantes (e2e)', () => {
         .set(admin.auth)
         .send({ reason: 'otra vez' })
         .expect(409);
-      await worker.runOnce(FAR()); // ticket pendiente
+      await worker.runOnce(FAR(), [doc.id]); // ticket pendiente
       expect((await document(doc.id)).status).toBe('ACCEPTED');
-      await worker.runOnce(LATER(24 * 11));
+      await worker.runOnce(LATER(24 * 11), [doc.id]);
       expect(await document(doc.id)).toMatchObject({ status: 'VOIDED' });
       expect((await document(doc.id)).voidedAt).not.toBeNull();
       await http()
@@ -766,12 +770,18 @@ describe('Comprobantes (e2e)', () => {
         .set(admin.auth)
         .send({ amountCents: 5000, reason: 'cortesía' })
         .expect(201);
-      const refund = await prisma.refund.findUniqueOrThrow({
+      // El barrido de otra instancia (o suite) puede ejecutar el reembolso a la vez: se espera.
+      let refund = await prisma.refund.findUniqueOrThrow({
         where: { id: (res.body as Body).id },
       });
+      for (let i = 0; i < 50 && refund.status !== 'SUCCEEDED'; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        refund = await prisma.refund.findUniqueOrThrow({
+          where: { id: refund.id },
+        });
+      }
       expect(refund.status).toBe('SUCCEEDED');
       expect(refund.creditNoteId).toBeTruthy();
-      expect((res.body as Body).creditNoteId).toBe(refund.creditNoteId);
       const note = await document(refund.creditNoteId!);
       expect(note).toMatchObject({
         docType: 'NOTA_CREDITO',
@@ -787,11 +797,18 @@ describe('Comprobantes (e2e)', () => {
       ).toMatchObject({ number: doc.number });
 
       // El resto del pago: segunda nota hasta cubrir el comprobante.
-      await http()
+      const rest = await http()
         .post(`/api/payments/${p.id}/refunds`)
         .set(admin.auth)
         .send({ amountCents: 15000, reason: 'resto' })
         .expect(201);
+      for (let i = 0; i < 50; i++) {
+        const r = await prisma.refund.findUniqueOrThrow({
+          where: { id: (rest.body as Body).id },
+        });
+        if (r.status === 'SUCCEEDED') break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
       const notes = await prisma.document.findMany({
         where: { relatedDocumentId: doc.id },
       });

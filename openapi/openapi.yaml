@@ -559,6 +559,11 @@ paths:
       responses:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
+        '409':
+          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara). No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /webhooks/culqi:
     post:
       operationId: receiveCulqiWebhook
@@ -577,6 +582,11 @@ paths:
       responses:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
+        '409':
+          description: Evento fuera de orden; ver `receiveStripeWebhook`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # -------------------------------------------------------------------- Auth
   /auth/google:
