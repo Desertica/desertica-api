@@ -14,11 +14,18 @@ import { AuditService } from '../audit/audit.service';
 import { toUserDto, UserDto } from '../users/user.mapper';
 import { GOOGLE_VERIFIER, type GoogleIdTokenVerifier } from './google-verifier';
 
+/** Cuerpo de la sesión (el refresh token viaja aparte, en la cookie). */
 export interface Session {
   accessToken: string;
-  refreshToken: string;
   expiresIn: number;
   user: UserDto;
+}
+
+export interface IssuedSession {
+  session: Session;
+  refreshToken: string;
+  /** Segundos de vigencia del refresh token (para `Max-Age` de la cookie). */
+  refreshMaxAgeSeconds: number;
 }
 
 export function hashToken(token: string): string {
@@ -35,7 +42,7 @@ export class AuthService {
     @Inject(GOOGLE_VERIFIER) private readonly google: GoogleIdTokenVerifier,
   ) {}
 
-  async loginWithGoogle(idToken: string, ip?: string): Promise<Session> {
+  async loginWithGoogle(idToken: string, ip?: string): Promise<IssuedSession> {
     const identity = await this.google.verify(idToken);
     const domain = this.config
       .get('ALLOWED_EMAIL_DOMAIN', { infer: true })
@@ -76,7 +83,7 @@ export class AuthService {
   }
 
   /** Rota el refresh token: el usado queda revocado y se emite uno nuevo. */
-  async refresh(refreshToken: string, ip?: string): Promise<Session> {
+  async refresh(refreshToken: string, ip?: string): Promise<IssuedSession> {
     const invalid = new UnauthorizedException('Invalid refresh token');
     const hash = hashToken(refreshToken);
     const stored = await this.prisma.refreshToken.findUnique({
@@ -127,7 +134,9 @@ export class AuthService {
     return toUserDto(user);
   }
 
-  private async issueSession(user: User & { role: Role }): Promise<Session> {
+  private async issueSession(
+    user: User & { role: Role },
+  ): Promise<IssuedSession> {
     const expiresIn = this.config.get('JWT_ACCESS_TTL_SECONDS', {
       infer: true,
     });
@@ -147,6 +156,10 @@ export class AuthService {
         expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
       },
     });
-    return { accessToken, refreshToken, expiresIn, user: toUserDto(user) };
+    return {
+      session: { accessToken, expiresIn, user: toUserDto(user) },
+      refreshToken,
+      refreshMaxAgeSeconds: ttlDays * 86_400,
+    };
   }
 }

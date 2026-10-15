@@ -87,7 +87,23 @@ export class RecordConsentDto {
 export class PublishLegalDto {
   @IsEnum(LegalDocumentKind) kind!: LegalDocumentKind;
   @IsString() @Matches(/^[a-z]{2}(-[A-Za-z]{2})?$/) locale!: string;
-  @IsString() @Matches(/^[a-z0-9][a-z0-9-]*$/) @MaxLength(100) cmsSlug!: string;
+  /** Obligatorio salvo para `WAIVER` (que usa el slug del tour). */
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9][a-z0-9-]*$/)
+  @MaxLength(100)
+  cmsSlug?: string;
+  /** Solo para `WAIVER`: el tour cuyo descargo se publica. */
+  @IsOptional() @IsUUID() tourRefId?: string;
+}
+
+export class LegalDocumentQuery extends PaginationQuery {
+  @IsOptional() @IsEnum(LegalDocumentKind) kind?: LegalDocumentKind;
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z]{2}(-[A-Za-z]{2})?$/)
+  locale?: string;
+  @IsOptional() @IsUUID() tourRefId?: string;
 }
 
 export class LocaleQuery {
