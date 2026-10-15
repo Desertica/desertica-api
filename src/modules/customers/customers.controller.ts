@@ -2,8 +2,10 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   Patch,
+  Post,
   Query,
   Req,
 } from '@nestjs/common';
@@ -39,5 +41,16 @@ export class CustomersController {
     @Req() req: Request,
   ) {
     return this.customers.update(id, dto, user.id, req.ip);
+  }
+
+  @Post(':id/erase')
+  @HttpCode(204)
+  @RequirePermission('customers:erase')
+  async erase(
+    @Param('id', UuidPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.customers.erase(id, user.id, req.ip);
   }
 }

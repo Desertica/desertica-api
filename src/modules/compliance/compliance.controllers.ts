@@ -23,6 +23,7 @@ import {
   LocaleQuery,
   PublishLegalDto,
   RecordConsentDto,
+  LegalDocumentQuery,
   SignWaiverDto,
   WaiverQuery,
 } from './dto/compliance.dto';
@@ -70,6 +71,12 @@ export class StaffComplianceController {
   @RequirePermission('waivers:read')
   listWaivers(@Query() q: WaiverQuery) {
     return this.waivers.list(q);
+  }
+
+  @Get('legal-documents')
+  @RequirePermission('catalog:read')
+  listLegal(@Query() q: LegalDocumentQuery) {
+    return this.legal.list(q);
   }
 
   @Post('legal-documents')

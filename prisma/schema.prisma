@@ -130,6 +130,20 @@ enum DocumentStatus {
   ERROR
 }
 
+enum DocumentJobKind {
+  /// Emitir el comprobante, guardar sus archivos y seguir su estado.
+  SYNC
+  /// Comunicación de baja y seguimiento de su ticket.
+  VOID
+}
+
+enum DocumentJobStatus {
+  PENDING
+  DONE
+  /// Agotó los reintentos: requiere atención del staff.
+  DEAD
+}
+
 enum NotificationChannel {
   EMAIL
   WHATSAPP
@@ -147,6 +161,8 @@ enum LegalDocumentKind {
   CANCELLATION
   COOKIES
   CONDUCT
+  /// Descargo de responsabilidad de un tour (uno por tour e idioma).
+  WAIVER
 }
 
 enum WaiverStatus {
@@ -232,6 +248,8 @@ model Customer {
   idDocType   IdDocType?
   idDocNumber String?
   locale      String       @default("es")
+  /// Cuándo se anonimizó por un pedido ARCO (los datos personales ya no existen).
+  erasedAt    DateTime?
   bookings    Booking[]
   acceptances Acceptance[]
   createdAt   DateTime     @default(now())
@@ -280,6 +298,7 @@ model TourRef {
   priceRules           PriceRule[]
   blackouts            Blackout[]
   waivers              Waiver[]
+  legalDocuments       LegalDocument[]
   createdAt            DateTime            @default(now())
   updatedAt            DateTime            @updatedAt
 }
@@ -394,6 +413,8 @@ model Booking {
   billing              Json
   /// UTM, gclid, fbclid y landing de la primera visita.
   attribution          Json?
+  /// Identificador anónimo del visitante (el del consentimiento de cookies), para eventos desde el servidor.
+  anonymousId          String?
   createdByUserId      String?
   cancelledAt          DateTime?
   cancelReason         String?
@@ -464,6 +485,9 @@ model Payment {
   failureCode      String?
   /// Pago registrado a mano (efectivo, transferencia, Yape personal).
   recordedByUserId String?
+  /// Enlace de pago desde el que se inició el cobro (se marca usado al confirmarse).
+  paymentLinkId    String?
+  paymentLink      PaymentLink?    @relation(fields: [paymentLinkId], references: [id])
   paidAt           DateTime?
   refunds          Refund[]
   disputes         Dispute[]
@@ -473,6 +497,7 @@ model Payment {
 
   @@unique([provider, providerRef])
   @@index([bookingId])
+  @@index([paymentLinkId])
   @@index([status, createdAt])
 }
 
@@ -487,6 +512,7 @@ model PaymentLink {
   expiresAt       DateTime
   usedAt          DateTime?
   createdByUserId String?
+  payments        Payment[]
   createdAt       DateTime    @default(now())
 
   @@index([bookingId])
@@ -603,11 +629,15 @@ model Document {
   pdfKey            String?
   sunatCode         String?
   sunatMessage      String?
+  /// Notas de crédito y débito: código de catálogo SUNAT y texto libre del motivo.
+  reasonCode        String?
+  reason            String?
   /// Para notas de crédito y débito: comprobante que modifican.
   relatedDocumentId String?
   relatedDocument   Document?      @relation("DocumentRelation", fields: [relatedDocumentId], references: [id])
   relatedBy         Document[]     @relation("DocumentRelation")
   refundCreditNote  Refund?        @relation("RefundCreditNote")
+  jobs              DocumentJob[]
   issuedAt          DateTime?
   voidedAt          DateTime?
   createdAt         DateTime       @default(now())
@@ -616,6 +646,26 @@ model Document {
   @@unique([seriesId, number])
   @@index([bookingId])
   @@index([status])
+}
+
+/// Cola (outbox) de trabajos hacia `desertica-billing`, en la base y sin Redis.
+/// Cada reintento usa la misma `externalId` (el id del `Document`).
+model DocumentJob {
+  id            String            @id @default(uuid())
+  documentId    String
+  document      Document          @relation(fields: [documentId], references: [id])
+  kind          DocumentJobKind
+  /// Parámetros del trabajo (p. ej. motivo de la baja y su ticket).
+  payload       Json?
+  status        DocumentJobStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now())
+  lastError     String?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([documentId])
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +697,13 @@ model LegalDocument {
   kind         LegalDocumentKind
   locale       String
   version      Int
-  /// Slug de la página en el CMS de donde se tomó el texto.
+  /// Solo `WAIVER`: el tour al que pertenece el descargo.
+  tourRefId    String?
+  tourRef      TourRef?          @relation(fields: [tourRefId], references: [id], onDelete: Restrict)
+  /// `""` para los documentos globales y el id del tour para un descargo: hace que la versión
+  /// sea única por tour sin depender de `NULL` en el índice único.
+  scopeKey     String            @default("")
+  /// Slug de la página en el CMS de donde se tomó el texto (para `WAIVER`, el slug del tour).
   cmsSlug      String
   /// Título de la página al momento de publicar.
   title        String
@@ -658,8 +714,10 @@ model LegalDocument {
   contentHash  String
   publishedAt  DateTime
   acceptances  Acceptance[]
+  waivers      Waiver[]
 
-  @@unique([kind, locale, version])
+  @@unique([kind, locale, scopeKey, version])
+  @@index([tourRefId])
 }
 
 model Acceptance {
@@ -678,26 +736,30 @@ model Acceptance {
 }
 
 model Waiver {
-  id              String       @id @default(uuid())
-  token           String       @unique
+  id              String         @id @default(uuid())
+  token           String         @unique
   bookingId       String
-  booking         Booking      @relation(fields: [bookingId], references: [id])
+  booking         Booking        @relation(fields: [bookingId], references: [id])
   passengerId     String?
-  passenger       Passenger?   @relation(fields: [passengerId], references: [id])
+  passenger       Passenger?     @relation(fields: [passengerId], references: [id])
   tourRefId       String
-  tourRef         TourRef      @relation(fields: [tourRefId], references: [id])
+  tourRef         TourRef        @relation(fields: [tourRefId], references: [id])
+  /// Versión del texto del descargo; es la de `legalDocument`.
   version         Int
-  status          WaiverStatus @default(PENDING)
+  /// Snapshot inmutable del texto que se firma. Nulo solo en descargos anteriores a su versionado.
+  legalDocumentId String?
+  legalDocument   LegalDocument? @relation(fields: [legalDocumentId], references: [id], onDelete: Restrict)
+  status          WaiverStatus   @default(PENDING)
   signerName      String?
   signerDocType   IdDocType?
   signerDocNumber String?
   /// Responsable que firma por un menor.
-  onBehalfOfMinor Boolean      @default(false)
+  onBehalfOfMinor Boolean        @default(false)
   medicalNotes    String?
   signedAt        DateTime?
   ip              String?
   pdfKey          String?
-  createdAt       DateTime     @default(now())
+  createdAt       DateTime       @default(now())
 
   @@index([bookingId])
 }

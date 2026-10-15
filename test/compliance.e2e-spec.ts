@@ -9,6 +9,7 @@ import {
   createCatalog,
   customerInput,
   publishLegal,
+  publishWaiverSnapshot,
   rand,
 } from './fixtures';
 import { createTestApp, loginAs, TestSession } from './helpers';
@@ -17,12 +18,21 @@ type Body = Record<string, any>;
 // Los textos legales son inmutables y no se pueden borrar: cada corrida usa idiomas propios.
 const letters = 'abcdefghijklmnopqrstuvwxyz';
 const pick = () => letters[Math.floor(Math.random() * 26)];
-const freshLocale = () =>
+const randomLocale = () =>
   `q${pick()}-${pick()}${pick()}`.replace(
     /-(..)/,
     (_m, x: string) => `-${x.toUpperCase()}`,
   );
-const LOCALE = freshLocale();
+// Solo hay unos 17 mil idiomas posibles y los textos no se pueden borrar: se elige
+// uno que todavía no exista en la base para que la prueba no dependa de la suerte.
+const freshLocaleIn = async (db: PrismaService) => {
+  for (;;) {
+    const locale = randomLocale();
+    if ((await db.legalDocument.count({ where: { locale } })) === 0)
+      return locale;
+  }
+};
+let LOCALE: string;
 
 describe('Cumplimiento (e2e)', () => {
   let app: INestApplication<App>;
@@ -35,6 +45,7 @@ describe('Cumplimiento (e2e)', () => {
   beforeAll(async () => {
     app = await createTestApp();
     prisma = app.get(PrismaService);
+    LOCALE = await freshLocaleIn(prisma);
     mailer = app.get<LogMailer>(MAILER);
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
@@ -90,7 +101,7 @@ describe('Cumplimiento (e2e)', () => {
     });
 
     it('numbers versions correctly under simultaneous publications', async () => {
-      const locale = freshLocale();
+      const locale = await freshLocaleIn(prisma);
       const results = await Promise.all(
         Array.from({ length: 5 }, () =>
           http()
@@ -125,7 +136,7 @@ describe('Cumplimiento (e2e)', () => {
     });
 
     it('serves the current version of each kind in a language', async () => {
-      const locale = freshLocale();
+      const locale = await freshLocaleIn(prisma);
       expect(
         (
           (
@@ -200,14 +211,13 @@ describe('Cumplimiento (e2e)', () => {
       expect(mail.to).toBe(body.email);
       expect((mail.data as Body).correlative).toBe(created.correlative);
 
-      const list = await http()
-        .get('/api/complaints')
-        .query({ status: 'OPEN', pageSize: 100 })
-        .set(operator.auth)
-        .expect(200);
-      const row = (list.body as { data: Body[] }).data.find(
-        (c) => c.id === created.correlative,
-      )!;
+      // Por id y no buscando en una página de la lista: la base acumula reclamos entre corridas.
+      const row = (
+        await http()
+          .get(`/api/complaints/${created.correlative}`)
+          .set(operator.auth)
+          .expect(200)
+      ).body as Body;
       expect(row).toMatchObject({
         kind: 'RECLAMO',
         status: 'OPEN',
@@ -549,6 +559,347 @@ describe('Cumplimiento (e2e)', () => {
           accepted: true,
         })
         .expect(409);
+    });
+  });
+
+  describe('waiver versions', () => {
+    const publish = (body: Body, who = admin) =>
+      http().post('/api/legal-documents').set(who.auth).send(body);
+
+    /** Tour con `requiresWaiver` y sin snapshot: `createCatalog` ya publica uno en inglés. */
+    const bareTour = async (prefix = 'fx') => {
+      const slug = `${prefix}-${rand()}-${rand()}`;
+      return prisma.tourRef.create({
+        data: { slug, title: `Tour ${slug}`, requiresWaiver: true },
+      });
+    };
+
+    const manualBooking = (departureId: string, locale?: string) =>
+      http()
+        .post('/api/bookings')
+        .set(operator.auth)
+        .send({
+          departureId,
+          currency: 'USD',
+          adults: 1,
+          customer: customerInput({ ...(locale ? { locale } : {}) }),
+          billing: billingBoleta,
+          sendConfirmation: false,
+        });
+
+    it('publishes a snapshot per tour and language, with its own version counter', async () => {
+      const a = await bareTour();
+      const b = await bareTour();
+      const es1 = await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: a.id,
+      }).expect(201);
+      const es2 = await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: a.id,
+      }).expect(201);
+      const en1 = await publish({
+        kind: 'WAIVER',
+        locale: 'en',
+        tourRefId: a.id,
+      }).expect(201);
+      const otherTour = await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: b.id,
+      }).expect(201);
+      expect(
+        [es1, es2, en1, otherTour].map((r) => (r.body as Body).version),
+      ).toEqual([1, 2, 1, 1]);
+      expect(es1.body as Body).toMatchObject({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: a.id,
+        cmsSlug: a.slug,
+        title: `Tour ${a.slug} (es)`,
+      });
+      const row = await prisma.legalDocument.findUniqueOrThrow({
+        where: { id: (es1.body as Body).id },
+      });
+      expect(row.textSnapshot).toBe(
+        `# Descargo de ${a.slug}\n\nTexto del descargo en es.`,
+      );
+      expect(row.contentHash).toBe((es1.body as Body).contentHash);
+      // Es inmutable como los demás documentos legales.
+      await expect(
+        prisma.legalDocument.update({
+          where: { id: row.id },
+          data: { textSnapshot: 'otro' },
+        }),
+      ).rejects.toThrow();
+      expect(
+        await prisma.auditLog.count({
+          where: { entityId: row.id, action: 'legalDocument.publish' },
+        }),
+      ).toBe(1);
+    });
+
+    it('does not mix versions when published at the same time', async () => {
+      const t = await bareTour();
+      const results = await Promise.all(
+        [1, 2, 3, 4].map(() =>
+          publish({ kind: 'WAIVER', locale: 'es', tourRefId: t.id }),
+        ),
+      );
+      expect(results.map((r) => r.status)).toEqual([201, 201, 201, 201]);
+      expect(
+        results.map((r) => (r.body as Body).version as number).sort(),
+      ).toEqual([1, 2, 3, 4]);
+    });
+
+    it('fails with a clear error when the CMS data is missing', async () => {
+      const noTour = await bareTour('sin-tour');
+      const noText = await bareTour('sin-descargo');
+      const missingTour = await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: noTour.id,
+      }).expect(422);
+      expect((missingTour.body as Body).message).toContain(
+        `no tour "${noTour.slug}"`,
+      );
+      const missingText = await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: noText.id,
+      }).expect(422);
+      expect(JSON.stringify(missingText.body)).toContain('waiverBody');
+      expect(
+        await prisma.legalDocument.count({
+          where: { tourRefId: { in: [noTour.id, noText.id] } },
+        }),
+      ).toBe(0);
+    });
+
+    it('validates tourRefId and cmsSlug by kind and needs legal:write', async () => {
+      const t = await bareTour();
+      await publish({ kind: 'WAIVER', locale: 'es' }).expect(422);
+      await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: '00000000-0000-4000-8000-000000000000',
+      }).expect(422);
+      await publish({
+        kind: 'WAIVER',
+        locale: 'es',
+        tourRefId: t.id,
+        cmsSlug: 'terms',
+      }).expect(422);
+      await publish({
+        kind: 'TERMS',
+        locale: LOCALE,
+        cmsSlug: 'terms',
+        tourRefId: t.id,
+      }).expect(422);
+      await publish({ kind: 'TERMS', locale: LOCALE }).expect(422);
+      await publish(
+        { kind: 'WAIVER', locale: 'es', tourRefId: t.id },
+        operator,
+      ).expect(403);
+    });
+
+    it('lists versions with filters and keeps waivers out of the current legal documents', async () => {
+      const t = await bareTour();
+      await publish({ kind: 'WAIVER', locale: 'es', tourRefId: t.id }).expect(
+        201,
+      );
+      await publish({ kind: 'WAIVER', locale: 'en', tourRefId: t.id }).expect(
+        201,
+      );
+      await publish({ kind: 'WAIVER', locale: 'es', tourRefId: t.id }).expect(
+        201,
+      );
+      const list = await http()
+        .get('/api/legal-documents')
+        .query({ tourRefId: t.id, kind: 'WAIVER' })
+        .set(operator.auth)
+        .expect(200);
+      const body = list.body as { data: Body[]; meta: Body };
+      expect(body.meta.total).toBe(3);
+      expect(body.data.map((d) => `${d.locale}/${d.version}`).sort()).toEqual([
+        'en/1',
+        'es/1',
+        'es/2',
+      ]);
+      const onlyEs = await http()
+        .get('/api/legal-documents')
+        .query({ tourRefId: t.id, locale: 'es' })
+        .set(operator.auth)
+        .expect(200);
+      expect((onlyEs.body as { data: Body[] }).data).toHaveLength(2);
+      await http()
+        .get('/api/legal-documents')
+        .query({ kind: 'X' })
+        .set(operator.auth)
+        .expect(422);
+      await http().get('/api/legal-documents').expect(401);
+
+      const current = await http()
+        .get('/api/public/legal-documents/current')
+        .query({ locale: 'es' })
+        .expect(200);
+      expect(
+        (current.body as { data: Body[] }).data.some(
+          (d) => d.kind === 'WAIVER',
+        ),
+      ).toBe(false);
+    });
+
+    it('refuses a waiver as an accepted legal document when booking', async () => {
+      const fx = await createCatalog(app);
+      const waiverDoc = await prisma.legalDocument.findFirstOrThrow({
+        where: { tourRefId: fx.tour.id },
+      });
+      const ids = await publishLegal(app, admin, LOCALE);
+      const dep = await fx.departure();
+      const h = await http()
+        .post('/api/public/holds')
+        .send({ departureId: dep.id, seats: 1 })
+        .expect(201);
+      await http()
+        .post('/api/public/bookings')
+        .send({
+          holdToken: (h.body as Body).token,
+          currency: 'USD',
+          adults: 1,
+          customer: customerInput({ locale: LOCALE }),
+          billing: billingBoleta,
+          paymentKind: 'FULL',
+          acceptedLegalDocumentIds: [...ids, waiverDoc.id],
+          locale: LOCALE,
+        })
+        .expect(422);
+    });
+
+    it('points each waiver at the latest snapshot of the booking language, falling back to English', async () => {
+      const fx = await createCatalog(app); // ya trae la versión 1 en inglés
+      await publishWaiverSnapshot(prisma, fx.tour, 'en'); // en v2
+      const es1 = await publishWaiverSnapshot(prisma, fx.tour, 'es');
+      const dep = await fx.departure();
+
+      const spanish = await manualBooking(dep.id, 'es-PE').expect(201);
+      const french = await manualBooking(dep.id, 'fr').expect(201);
+      const withVersion = async (res: { body: unknown }) =>
+        prisma.waiver.findFirstOrThrow({
+          where: { bookingId: (res.body as Body).id },
+          include: { legalDocument: true },
+        });
+      // 'es-PE' no es 'es': las versiones se buscan por el idioma exacto de la reserva.
+      const w1 = await withVersion(spanish);
+      expect(w1.legalDocument).toMatchObject({ locale: 'en', version: 2 });
+      expect(w1.version).toBe(2);
+
+      const exact = await manualBooking(dep.id, 'es').expect(201);
+      const w2 = await withVersion(exact);
+      expect(w2.legalDocumentId).toBe(es1.id);
+      expect(w2.version).toBe(es1.version);
+
+      const w3 = await withVersion(french);
+      expect(w3.legalDocument).toMatchObject({ locale: 'en', version: 2 });
+    });
+
+    it('shows the signer the pinned snapshot even after a newer version is published', async () => {
+      const fx = await createCatalog(app);
+      const dep = await fx.departure();
+      const created = await manualBooking(dep.id).expect(201);
+      const waiver = await prisma.waiver.findFirstOrThrow({
+        where: { bookingId: (created.body as Body).id },
+      });
+      const v1 = await prisma.legalDocument.findFirstOrThrow({
+        where: { tourRefId: fx.tour.id, locale: 'en', version: 1 },
+      });
+      await publish({
+        kind: 'WAIVER',
+        locale: 'en',
+        tourRefId: fx.tour.id,
+      }).expect(201);
+
+      const form = await http()
+        .get(`/api/public/waivers/${waiver.token}`)
+        .expect(200);
+      expect(form.body as Body).toMatchObject({
+        version: 1,
+        locale: 'en',
+        title: v1.title,
+        body: v1.textSnapshot,
+        contentHash: v1.contentHash,
+      });
+      const signed = await http()
+        .post(`/api/public/waivers/${waiver.token}/sign`)
+        .send({
+          signerName: 'Ana Pérez',
+          signerDocType: 'DNI',
+          signerDocNumber: '12345678',
+          accepted: true,
+        })
+        .expect(200);
+      expect((signed.body as Body).contentHash).toBe(v1.contentHash);
+      const list = await http()
+        .get('/api/waivers')
+        .query({ bookingId: (created.body as Body).id })
+        .set(operator.auth)
+        .expect(200);
+      expect((list.body as { data: Body[] }).data[0]).toMatchObject({
+        version: 1,
+        legalDocumentId: v1.id,
+      });
+    });
+
+    it('blocks bookings of a tour without a published waiver text, and does not need one when it requires none', async () => {
+      const fx = await createCatalog(app, { requiresWaiver: false });
+      const dep = await fx.departure();
+      await manualBooking(dep.id).expect(201);
+
+      const tour = await bareTour();
+      await prisma.priceRule.create({
+        data: {
+          tourRefId: tour.id,
+          currency: 'USD',
+          adultCents: 10000,
+          childCents: 6000,
+        },
+      });
+      const open = await prisma.departure.create({
+        data: {
+          tourRefId: tour.id,
+          startsAt: new Date(Date.now() + 10 * 86_400_000),
+          capacity: 5,
+        },
+      });
+      const denied = await manualBooking(open.id).expect(409);
+      expect(JSON.stringify(denied.body)).toContain('waiver text');
+      // Nada quedó a medias: ni reserva ni cupo tomado.
+      expect(
+        await prisma.booking.count({ where: { departureId: open.id } }),
+      ).toBe(0);
+
+      const ids = await publishLegal(app, admin, LOCALE);
+      const h = await http()
+        .post('/api/public/holds')
+        .send({ departureId: open.id, seats: 1 })
+        .expect(201);
+      await http()
+        .post('/api/public/bookings')
+        .send({
+          holdToken: (h.body as Body).token,
+          currency: 'USD',
+          adults: 1,
+          customer: customerInput({ locale: LOCALE }),
+          billing: billingBoleta,
+          paymentKind: 'FULL',
+          acceptedLegalDocumentIds: ids,
+          locale: LOCALE,
+        })
+        .expect(409);
+      await publishWaiverSnapshot(prisma, tour);
+      await manualBooking(open.id).expect(201);
     });
   });
 

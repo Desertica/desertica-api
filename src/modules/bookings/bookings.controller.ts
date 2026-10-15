@@ -21,11 +21,13 @@ import { BookingViewService } from './booking-view.service';
 import {
   BookingQuery,
   CancelBookingDto,
+  CancellationQuoteQuery,
   CreateManualBookingDto,
   CreatePaymentLinkDto,
   ManualPaymentDto,
   RescheduleBookingDto,
   SetBookingStatusDto,
+  StaffQuoteDto,
   UpdateBookingDto,
 } from './dto/booking.dto';
 
@@ -59,6 +61,14 @@ export class BookingsController {
     return result.body;
   }
 
+  // Declarado antes de `:id` para que "quote" no se lea como un id.
+  @Post('quote')
+  @HttpCode(200)
+  @RequirePermission('bookings:write')
+  createStaffQuote(@Body() dto: StaffQuoteDto, @CurrentUser() user: AuthUser) {
+    return this.creation.staffQuote(dto, user);
+  }
+
   @Get(':id')
   @RequirePermission('bookings:read')
   get(@Param('id', UuidPipe) id: string) {
@@ -74,6 +84,15 @@ export class BookingsController {
     @Req() req: Request,
   ) {
     return this.lifecycle.update(id, dto, user, req.ip);
+  }
+
+  @Get(':id/cancellation-quote')
+  @RequirePermission('bookings:read')
+  getCancellationQuote(
+    @Param('id', UuidPipe) id: string,
+    @Query() q: CancellationQuoteQuery,
+  ) {
+    return this.lifecycle.quoteCancellation(id, q.refund);
   }
 
   @Post(':id/cancel')

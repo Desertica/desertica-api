@@ -6,10 +6,3 @@ export class GoogleLoginDto {
   @MaxLength(4096)
   idToken!: string;
 }
-
-export class RefreshTokenDto {
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(512)
-  refreshToken!: string;
-}

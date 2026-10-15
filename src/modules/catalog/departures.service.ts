@@ -14,6 +14,7 @@ import {
   DepartureQuery,
   UpdateDepartureDto,
 } from './dto/catalog.dto';
+import { TourTitlesService } from '../cms/tour-titles.service';
 import { SeatsService } from './seats.service';
 import { expandSeries, MAX_SERIES } from './series';
 
@@ -23,6 +24,7 @@ export class DeparturesService {
     private readonly prisma: PrismaService,
     private readonly seats: SeatsService,
     private readonly audit: AuditService,
+    private readonly titles: TourTitlesService,
   ) {}
 
   async list(q: DepartureQuery) {
@@ -41,24 +43,30 @@ export class DeparturesService {
     const [rows, total] = await Promise.all([
       this.prisma.departure.findMany({
         where,
+        include: { tourRef: true },
         orderBy: { startsAt: 'asc' },
         ...skipTake(q),
       }),
       this.prisma.departure.count({ where }),
     ]);
     const counts = await this.seats.countFor(rows.map((r) => r.id));
+    const titles = await this.titles.forTours(rows.map((r) => r.tourRef));
     return paginated(
-      rows.map((r) => toDepartureDto(r, counts.get(r.id))),
+      rows.map((r) => toDepartureDto(r, counts.get(r.id), titles)),
       q,
       total,
     );
   }
 
   async get(id: string) {
-    const row = await this.prisma.departure.findUnique({ where: { id } });
+    const row = await this.prisma.departure.findUnique({
+      where: { id },
+      include: { tourRef: true },
+    });
     if (!row) throw new NotFoundException('Departure not found');
     const counts = await this.seats.countFor([id]);
-    return toDepartureDto(row, counts.get(id));
+    const titles = await this.titles.forTours([row.tourRef]);
+    return toDepartureDto(row, counts.get(id), titles);
   }
 
   async create(dto: CreateDepartureDto, actorId: string, ip?: string) {
@@ -107,6 +115,7 @@ export class DeparturesService {
       const rows = await Promise.all(
         starts.map((startsAt) =>
           tx.departure.create({
+            include: { tourRef: true },
             data: {
               tourRefId: dto.tourRefId,
               startsAt,
@@ -135,7 +144,8 @@ export class DeparturesService {
       );
       return rows;
     });
-    return { data: created.map((d) => toDepartureDto(d)) };
+    const titles = await this.titles.forTours([tour]);
+    return { data: created.map((d) => toDepartureDto(d, undefined, titles)) };
   }
 
   async update(
@@ -148,7 +158,10 @@ export class DeparturesService {
       if (!(await this.seats.lockDeparture(tx, id))) {
         throw new NotFoundException('Departure not found');
       }
-      const before = await tx.departure.findUniqueOrThrow({ where: { id } });
+      const before = await tx.departure.findUniqueOrThrow({
+        where: { id },
+        include: { tourRef: true },
+      });
       if (before.status === 'CANCELLED' || before.status === 'COMPLETED') {
         throw new ConflictException(`Departure is ${before.status}`);
       }
@@ -163,6 +176,7 @@ export class DeparturesService {
       }
       const updated = await tx.departure.update({
         where: { id },
+        include: { tourRef: true },
         data: {
           ...(dto.startsAt ? { startsAt: new Date(dto.startsAt) } : {}),
           capacity: dto.capacity,
@@ -189,6 +203,7 @@ export class DeparturesService {
       return updated;
     });
     const counts = await this.seats.countFor([id]);
-    return toDepartureDto(row, counts.get(id));
+    const titles = await this.titles.forTours([row.tourRef]);
+    return toDepartureDto(row, counts.get(id), titles);
   }
 }

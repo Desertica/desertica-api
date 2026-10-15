@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { hashLegalText } from '../src/modules/compliance/legal.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TestSession } from './helpers';
 
@@ -52,6 +53,10 @@ export async function createCatalog(
       cancellationPolicyId: policy.id,
     },
   });
+  if (opts.requiresWaiver ?? true) {
+    // Sin un texto de descargo publicado el tour no se puede reservar.
+    await publishWaiverSnapshot(prisma, tour);
+  }
   await prisma.priceRule.createMany({
     data: [
       {
@@ -88,6 +93,34 @@ export async function createCatalog(
       return { id: d.id, startsAt: d.startsAt };
     },
   };
+}
+
+/** Inserta el snapshot del descargo de un tour (versión 1, en inglés, que sirve de respaldo a cualquier idioma). */
+export async function publishWaiverSnapshot(
+  prisma: PrismaService,
+  tour: { id: string; slug: string },
+  locale = 'en',
+) {
+  const body = `# Descargo de ${tour.slug}\n\nTexto del descargo.`;
+  const title = `Descargo ${tour.slug}`;
+  const last = await prisma.legalDocument.findFirst({
+    where: { kind: 'WAIVER', locale, tourRefId: tour.id },
+    orderBy: { version: 'desc' },
+  });
+  return prisma.legalDocument.create({
+    data: {
+      kind: 'WAIVER',
+      locale,
+      version: (last?.version ?? 0) + 1,
+      tourRefId: tour.id,
+      scopeKey: tour.id,
+      cmsSlug: tour.slug,
+      title,
+      textSnapshot: body,
+      contentHash: hashLegalText(title, body),
+      publishedAt: new Date(),
+    },
+  });
 }
 
 /** Publica TERMS, PRIVACY y CANCELLATION en un idioma de pruebas y devuelve sus ids. */

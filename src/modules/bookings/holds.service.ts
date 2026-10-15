@@ -11,6 +11,7 @@ import {
   KEY_VALUE_STORE,
   type KeyValueStore,
 } from '../../common/cache/key-value-store';
+import { BlockedIdentitiesService } from '../admin/blocked-identities.service';
 import { isBlackedOut, isOnSale } from '../catalog/pricing';
 import { SeatsService } from '../catalog/seats.service';
 import { SettingsService } from '../settings/settings.service';
@@ -24,6 +25,7 @@ export class HoldsService {
     private readonly seats: SeatsService,
     private readonly settings: SettingsService,
     private readonly captcha: CaptchaService,
+    private readonly blocked: BlockedIdentitiesService,
     @Inject(KEY_VALUE_STORE) private readonly store: KeyValueStore,
   ) {}
 
@@ -38,6 +40,7 @@ export class HoldsService {
     ctx: { ip?: string; turnstileToken?: string } = {},
     now = new Date(),
   ) {
+    await this.blocked.assertAllowed({ ip: ctx.ip });
     await this.captcha.verify(ctx.turnstileToken, ctx.ip);
     // Tope por IP: sin él, un solo cliente podría retener todo el cupo renovando bloqueos.
     if (ctx.ip) {
@@ -82,6 +85,31 @@ export class HoldsService {
           message: 'Not enough seats left',
           details: { reason: 'NO_CAPACITY', seatsLeft: Math.max(0, left) },
         });
+      }
+      // Tope de bloqueos vigentes por salida: cuenta dentro del candado, así que no se sobrepasa.
+      const cap = await this.settings.getNumber('maxActiveHoldsPerDeparture');
+      const active = await tx.hold.findMany({
+        where: {
+          departureId,
+          releasedAt: null,
+          expiresAt: { gt: now },
+          booking: { is: null },
+        },
+        select: { expiresAt: true },
+        orderBy: { expiresAt: 'asc' },
+      });
+      if (active.length >= cap) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((active[0].expiresAt.getTime() - now.getTime()) / 1000),
+        );
+        throw new HttpException(
+          {
+            message: 'Too many seat holds are active for this departure',
+            details: { reason: 'TOO_MANY_HOLDS', retryAfterSeconds },
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
       }
       const hold = await tx.hold.create({
         data: {
