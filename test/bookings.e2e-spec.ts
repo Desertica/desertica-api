@@ -2,6 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { BackgroundQueue } from '../src/common/queue/background-queue';
+import { limaDate } from '../src/common/time/lima';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
@@ -393,7 +394,7 @@ describe('Reservas (e2e)', () => {
       };
       const a = await fx.departure();
       const cheap = await fx.departure({ startsAt: inHours(24 * 15) });
-      const day = cheap.startsAt.toISOString().slice(0, 10);
+      const day = limaDate(cheap.startsAt);
       const rule = await prisma.priceRule.create({
         data: {
           tourRefId: fx.tour.id,
@@ -1341,7 +1342,7 @@ describe('Reservas (e2e)', () => {
     it('charges the difference when the target is more expensive', async () => {
       const a = await fx.departure();
       const peak = await fx.departure({ startsAt: inHours(24 * 12) });
-      const day = peak.startsAt.toISOString().slice(0, 10);
+      const day = limaDate(peak.startsAt);
       const rule = await prisma.priceRule.create({
         data: {
           tourRefId: fx.tour.id,
@@ -1384,7 +1385,7 @@ describe('Reservas (e2e)', () => {
     it('queues a refund for the difference when the target is cheaper', async () => {
       const a = await fx.departure();
       const cheap = await fx.departure({ startsAt: inHours(24 * 13) });
-      const day = cheap.startsAt.toISOString().slice(0, 10);
+      const day = limaDate(cheap.startsAt);
       const rule = await prisma.priceRule.create({
         data: {
           tourRefId: fx.tour.id,

@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { limaDate } from '../src/common/time/lima';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { BlockedIdentitiesService } from '../src/modules/admin/blocked-identities.service';
 import { HoldsService } from '../src/modules/bookings/holds.service';
@@ -465,10 +466,8 @@ describe('Administración (e2e)', () => {
           status: 'SUCCEEDED',
         },
       });
-      const today = new Date().toISOString().slice(0, 10);
-      const tomorrow = new Date(Date.now() + 86_400_000)
-        .toISOString()
-        .slice(0, 10);
+      const today = limaDate(new Date());
+      const tomorrow = limaDate(new Date(Date.now() + 86_400_000));
       const rows = (
         (
           await http()
@@ -484,7 +483,7 @@ describe('Administración (e2e)', () => {
         bookings: 1,
       });
 
-      const start = dep.startsAt.toISOString().slice(0, 10);
+      const start = limaDate(dep.startsAt);
       const dash = (
         await http()
           .get('/api/dashboard/summary')
