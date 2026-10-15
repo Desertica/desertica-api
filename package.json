@@ -27,6 +27,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
     "prisma:seed": "prisma db seed",
+    "openapi:lint": "npx --yes @redocly/cli@2.57.0 lint openapi/openapi.yaml openapi/billing.yaml",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "postinstall": "prisma generate"

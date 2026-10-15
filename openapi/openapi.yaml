@@ -1,0 +1,2913 @@
+openapi: 3.1.0
+info:
+  title: Desertica API
+  version: 0.1.0
+  summary: Contrato del backend transaccional de Desertica.
+  description: |
+    Fuente de verdad del contrato entre `desertica-api`, `desertica-web` y `desertica-backoffice`.
+    Un cambio de contrato se hace primero en este archivo, por PR, y después se implementa.
+
+    ## Convenciones
+    - **Dinero**: enteros en la unidad menor (`*Cents`), con IGV incluido. El precio es único para todos
+      los clientes. Monedas: `USD` y `PEN`.
+    - **Fechas**: ISO 8601 en UTC. Las reglas de negocio (cortes de venta, recordatorios) usan `America/Lima`.
+    - **Paginación**: `page` (desde 1) y `pageSize` (máximo 100). Las listas responden `{ data, meta }`.
+    - **Errores**: `{ statusCode, error, message, details? }`.
+    - **Idempotencia**: los `POST` que crean reservas y pagos aceptan `Idempotency-Key`; repetir la clave
+      devuelve la respuesta original.
+    - **Autenticación**: el staff usa `Authorization: Bearer <jwt>` (login con Google). El cliente accede a su
+      reserva con `X-Booking-Token`. Los webhooks se validan por firma del proveedor.
+    - **Permisos**: cada operación del staff declara `x-permission`. El rol `admin` tiene todos; `operator`
+      tiene los de reservas, calendario, clientes, pagos (reembolsos hasta un tope), comprobantes y reclamos,
+      y no tiene `users:*`, `company:*`, `settings:*` ni `documents:void`.
+    - **Contenido editorial** (títulos, textos, medios) no pasa por este API: lo sirve el CMS.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: /api
+tags:
+  - name: Public
+    description: Endpoints del sitio web (sin cuenta).
+  - name: Webhooks
+    description: Eventos entrantes de las pasarelas de pago.
+  - name: Auth
+    description: Sesión del staff.
+  - name: Catalog
+    description: Tours, precios, salidas y políticas.
+  - name: Bookings
+    description: Reservas y su ciclo de vida.
+  - name: Payments
+    description: Pagos, enlaces de pago, reembolsos y disputas.
+  - name: Documents
+    description: Comprobantes electrónicos.
+  - name: Customers
+    description: Clientes.
+  - name: Compliance
+    description: Reclamaciones, descargos y documentos legales.
+  - name: Admin
+    description: Usuarios, empresa, series, ajustes y auditoría.
+  - name: Reports
+    description: Reportes y panel.
+  - name: Health
+    description: Estado del servicio.
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      tags: [Health]
+      summary: Liveness
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, service]
+                properties:
+                  status: { type: string, enum: [ok] }
+                  service: { type: string }
+  /health/ready:
+    get:
+      operationId: getHealthReady
+      tags: [Health]
+      summary: Readiness (base de datos y Redis)
+      security: []
+      responses:
+        '200': { description: Listo }
+        '503': { $ref: '#/components/responses/Error' }
+
+  # ------------------------------------------------------------------ Public
+  /public/tours/{slug}/availability:
+    get:
+      operationId: getTourAvailability
+      tags: [Public]
+      summary: Disponibilidad y precios de un tour para un mes
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/TourSlug'
+        - name: month
+          in: query
+          required: true
+          schema: { type: string, pattern: '^\d{4}-(0[1-9]|1[0-2])$' }
+        - name: currency
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Currency' }
+        - name: format
+          in: query
+          schema: { $ref: '#/components/schemas/TourFormat' }
+        - name: language
+          in: query
+          schema: { type: string, example: es }
+      responses:
+        '200':
+          description: Salidas del mes con cupo y precio
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AvailableDeparture' }
+        '404': { $ref: '#/components/responses/Error' }
+  /public/quotes:
+    post:
+      operationId: createQuote
+      tags: [Public]
+      summary: Cotizar una reserva
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/QuoteRequest' }
+      responses:
+        '200':
+          description: Cotización
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Quote' }
+        '422': { $ref: '#/components/responses/Error' }
+  /public/holds:
+    post:
+      operationId: createHold
+      tags: [Public]
+      summary: Bloquear cupo temporalmente
+      description: Reserva los asientos durante unos minutos mientras el cliente completa el pago.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [departureId, seats]
+              properties:
+                departureId: { type: string, format: uuid }
+                seats: { type: integer, minimum: 1 }
+      responses:
+        '201':
+          description: Cupo bloqueado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Hold' }
+        '409':
+          description: Sin cupo suficiente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+  /public/holds/{token}:
+    delete:
+      operationId: releaseHold
+      tags: [Public]
+      summary: Liberar un bloqueo de cupo
+      security: []
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Liberado }
+  /public/bookings:
+    post:
+      operationId: createPublicBooking
+      tags: [Public]
+      summary: Crear una reserva desde un bloqueo de cupo
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePublicBooking' }
+      responses:
+        '201':
+          description: Reserva creada pendiente de pago
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicBookingCreated' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410':
+          description: El bloqueo de cupo expiró
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /public/bookings/access:
+    post:
+      operationId: requestBookingAccess
+      tags: [Public]
+      summary: Pedir acceso a "mi reserva"
+      description: Envía por email un enlace con el token de acceso. Responde igual exista o no la reserva.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference, email]
+              properties:
+                reference: { type: string }
+                email: { type: string, format: email }
+      responses:
+        '202': { description: Aceptado }
+        '429': { $ref: '#/components/responses/Error' }
+  /public/bookings/{reference}:
+    get:
+      operationId: getPublicBooking
+      tags: [Public]
+      summary: Ver una reserva con el token del cliente
+      security:
+        - bookingToken: []
+      parameters:
+        - $ref: '#/components/parameters/Reference'
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicBooking' }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /public/bookings/{reference}/payments/stripe-intent:
+    post:
+      operationId: createBookingStripeIntent
+      tags: [Public]
+      summary: Crear un PaymentIntent de Stripe (USD)
+      security:
+        - bookingToken: []
+      parameters:
+        - $ref: '#/components/parameters/Reference'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
+      responses:
+        '201':
+          description: Intent creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StripeIntent' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /public/bookings/{reference}/payments/culqi-charge:
+    post:
+      operationId: createBookingCulqiCharge
+      tags: [Public]
+      summary: Cobrar con un token de Culqi (USD o PEN)
+      security:
+        - bookingToken: []
+      parameters:
+        - $ref: '#/components/parameters/Reference'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CulqiChargeRequest' }
+      responses:
+        '201':
+          description: Resultado del cobro
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CulqiChargeResult' }
+        '409': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+  /public/payment-links/{token}:
+    get:
+      operationId: getPaymentLinkInfo
+      tags: [Public]
+      summary: Ver un enlace de pago
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LinkToken'
+      responses:
+        '200':
+          description: Datos del enlace
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentLinkInfo' }
+        '404': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+  /public/payment-links/{token}/stripe-intent:
+    post:
+      operationId: createLinkStripeIntent
+      tags: [Public]
+      summary: Crear un PaymentIntent para un enlace de pago
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LinkToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '201':
+          description: Intent creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StripeIntent' }
+        '410': { $ref: '#/components/responses/Error' }
+  /public/payment-links/{token}/culqi-charge:
+    post:
+      operationId: createLinkCulqiCharge
+      tags: [Public]
+      summary: Cobrar con Culqi desde un enlace de pago
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LinkToken'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, email]
+              properties:
+                token: { type: string, description: Token generado por Culqi.js }
+                email: { type: string, format: email }
+      responses:
+        '201':
+          description: Resultado del cobro
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CulqiChargeResult' }
+        '410': { $ref: '#/components/responses/Error' }
+  /public/waivers/{token}:
+    get:
+      operationId: getWaiverForm
+      tags: [Public]
+      summary: Ver el descargo de responsabilidad a firmar
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LinkToken'
+      responses:
+        '200':
+          description: Descargo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WaiverForm' }
+        '404': { $ref: '#/components/responses/Error' }
+  /public/waivers/{token}/sign:
+    post:
+      operationId: signWaiver
+      tags: [Public]
+      summary: Firmar el descargo de responsabilidad
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/LinkToken'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [signerName, signerDocType, signerDocNumber, accepted]
+              properties:
+                signerName: { type: string }
+                signerDocType: { $ref: '#/components/schemas/IdDocType' }
+                signerDocNumber: { type: string }
+                onBehalfOfMinor: { type: boolean }
+                medicalNotes: { type: string, maxLength: 1000 }
+                emergencyContactName: { type: string }
+                emergencyContactPhone: { type: string }
+                accepted: { type: boolean, const: true }
+      responses:
+        '200':
+          description: Firmado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WaiverForm' }
+        '409': { $ref: '#/components/responses/Error' }
+  /public/complaints:
+    post:
+      operationId: createComplaint
+      tags: [Public]
+      summary: Registrar un reclamo o queja (Libro de Reclamaciones)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateComplaint' }
+      responses:
+        '201':
+          description: Registrado; se envía copia al correo del reclamante
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [correlative, dueAt]
+                properties:
+                  correlative: { type: integer }
+                  dueAt: { type: string, format: date-time }
+        '429': { $ref: '#/components/responses/Error' }
+  /public/contact-messages:
+    post:
+      operationId: createContactMessage
+      tags: [Public]
+      summary: Enviar un mensaje de contacto
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, message]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                whatsapp: { type: string }
+                country: { type: string }
+                message: { type: string }
+                locale: { type: string }
+                turnstileToken: { type: string }
+      responses:
+        '202': { description: Aceptado }
+        '429': { $ref: '#/components/responses/Error' }
+  /public/consents:
+    post:
+      operationId: recordConsent
+      tags: [Public]
+      summary: Registrar el consentimiento de cookies
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [anonymousId, categories, policyVersion]
+              properties:
+                anonymousId: { type: string }
+                categories:
+                  type: object
+                  additionalProperties: { type: boolean }
+                policyVersion: { type: integer }
+      responses:
+        '204': { description: Registrado }
+  /public/legal-documents/current:
+    get:
+      operationId: getCurrentLegalDocuments
+      tags: [Public]
+      summary: Versiones vigentes de los documentos legales
+      security: []
+      parameters:
+        - name: locale
+          in: query
+          required: true
+          schema: { type: string, example: es }
+      responses:
+        '200':
+          description: Versiones vigentes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/LegalDocument' }
+
+  # ---------------------------------------------------------------- Webhooks
+  /webhooks/stripe:
+    post:
+      operationId: receiveStripeWebhook
+      tags: [Webhooks]
+      summary: Eventos de Stripe
+      description: Valida `Stripe-Signature`, guarda el evento y responde 2xx aunque ya estuviera procesado.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: Recibido }
+        '400': { $ref: '#/components/responses/Error' }
+  /webhooks/culqi:
+    post:
+      operationId: receiveCulqiWebhook
+      tags: [Webhooks]
+      summary: Eventos de Culqi
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: Recibido }
+        '400': { $ref: '#/components/responses/Error' }
+
+  # -------------------------------------------------------------------- Auth
+  /auth/google:
+    post:
+      operationId: loginWithGoogle
+      tags: [Auth]
+      summary: Iniciar sesión con Google (solo dominio de la empresa)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken: { type: string }
+      responses:
+        '200':
+          description: Sesión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+  /auth/refresh:
+    post:
+      operationId: refreshSession
+      tags: [Auth]
+      summary: Renovar el token de acceso
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: Sesión renovada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Error' }
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Auth]
+      summary: Cerrar sesión (revoca el refresh token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '204': { description: Cerrada }
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [Auth]
+      summary: Usuario autenticado y sus permisos
+      responses:
+        '200':
+          description: Usuario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/Error' }
+
+  # ----------------------------------------------------------------- Catalog
+  /tour-refs:
+    get:
+      operationId: listTourRefs
+      tags: [Catalog]
+      summary: Listar tours operativos
+      x-permission: catalog:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Tours
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/TourRef' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /tour-refs/sync:
+    post:
+      operationId: syncTourRefs
+      tags: [Catalog]
+      summary: Sincronizar tours desde el CMS
+      x-permission: catalog:write
+      responses:
+        '200':
+          description: Resultado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [created, updated]
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+  /tour-refs/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getTourRef
+      tags: [Catalog]
+      summary: Ver un tour operativo
+      x-permission: catalog:read
+      responses:
+        '200':
+          description: Tour
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TourRef' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateTourRef
+      tags: [Catalog]
+      summary: Editar ajustes operativos de un tour
+      x-permission: catalog:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateTourRef' }
+      responses:
+        '200':
+          description: Tour
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TourRef' }
+  /departures:
+    get:
+      operationId: listDepartures
+      tags: [Catalog]
+      summary: Listar salidas
+      x-permission: departures:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: tourRefId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DepartureStatus' }
+      responses:
+        '200':
+          description: Salidas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Departure' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      operationId: createDepartures
+      tags: [Catalog]
+      summary: Crear una salida (o una serie)
+      x-permission: departures:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateDeparture' }
+      responses:
+        '201':
+          description: Salidas creadas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Departure' }
+        '409': { $ref: '#/components/responses/Error' }
+  /departures/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getDeparture
+      tags: [Catalog]
+      summary: Ver una salida
+      x-permission: departures:read
+      responses:
+        '200':
+          description: Salida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Departure' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateDeparture
+      tags: [Catalog]
+      summary: Editar una salida
+      x-permission: departures:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateDeparture' }
+      responses:
+        '200':
+          description: Salida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Departure' }
+        '409':
+          description: La capacidad nueva es menor que los asientos vendidos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /departures/{id}/manifest:
+    get:
+      operationId: getDepartureManifest
+      tags: [Catalog]
+      summary: Manifiesto de pasajeros de una salida
+      x-permission: departures:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Manifiesto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Manifest' }
+  /departures/{id}/cancel:
+    post:
+      operationId: cancelDeparture
+      tags: [Catalog]
+      summary: Cancelar una salida por decisión de la empresa
+      description: |
+        Aplica a todas las reservas confirmadas de la salida. Con `resolution = REFUND` reembolsa el 100 %
+        y emite notas de crédito; con `RESCHEDULE` mueve las reservas a `targetDepartureId`. Notifica
+        a los clientes.
+      x-permission: departures:cancel
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, resolution]
+              properties:
+                reason: { type: string }
+                resolution: { type: string, enum: [REFUND, RESCHEDULE, CLIENT_CHOICE] }
+                targetDepartureId: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Cancelación en proceso
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [affectedBookings]
+                properties:
+                  affectedBookings: { type: integer }
+  /price-rules:
+    get:
+      operationId: listPriceRules
+      tags: [Catalog]
+      summary: Listar reglas de precio
+      x-permission: prices:read
+      parameters:
+        - name: tourRefId
+          in: query
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Reglas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PriceRule' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      operationId: createPriceRule
+      tags: [Catalog]
+      summary: Crear una regla de precio
+      x-permission: prices:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PriceRuleInput' }
+      responses:
+        '201':
+          description: Regla
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PriceRule' }
+  /price-rules/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: replacePriceRule
+      tags: [Catalog]
+      summary: Reemplazar una regla de precio
+      x-permission: prices:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PriceRuleInput' }
+      responses:
+        '200':
+          description: Regla
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PriceRule' }
+    delete:
+      operationId: deactivatePriceRule
+      tags: [Catalog]
+      summary: Desactivar una regla de precio
+      x-permission: prices:write
+      responses:
+        '204': { description: Desactivada }
+  /blackouts:
+    get:
+      operationId: listBlackouts
+      tags: [Catalog]
+      summary: Listar fechas bloqueadas
+      x-permission: departures:read
+      responses:
+        '200':
+          description: Bloqueos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Blackout' }
+    post:
+      operationId: createBlackout
+      tags: [Catalog]
+      summary: Crear una fecha bloqueada
+      x-permission: departures:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BlackoutInput' }
+      responses:
+        '201':
+          description: Bloqueo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Blackout' }
+  /blackouts/{id}:
+    delete:
+      operationId: deleteBlackout
+      tags: [Catalog]
+      summary: Eliminar una fecha bloqueada
+      x-permission: departures:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204': { description: Eliminada }
+  /cancellation-policies:
+    get:
+      operationId: listCancellationPolicies
+      tags: [Catalog]
+      summary: Listar políticas de cancelación
+      x-permission: catalog:read
+      responses:
+        '200':
+          description: Políticas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/CancellationPolicy' }
+    post:
+      operationId: createCancellationPolicy
+      tags: [Catalog]
+      summary: Crear una versión de política de cancelación
+      x-permission: catalog:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancellationPolicyInput' }
+      responses:
+        '201':
+          description: Política
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CancellationPolicy' }
+
+  # ---------------------------------------------------------------- Bookings
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [Bookings]
+      summary: Listar reservas
+      x-permission: bookings:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/BookingStatus' }
+        - name: departureId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: tourRefId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: q
+          in: query
+          description: Busca por referencia, nombre, correo o documento.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Reservas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/BookingSummary' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      operationId: createManualBooking
+      tags: [Bookings]
+      summary: Crear una reserva manual (asistida)
+      description: Para ventas por WhatsApp o en persona. Descuenta cupo sin pasar por el bloqueo temporal.
+      x-permission: bookings:write
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateManualBooking' }
+      responses:
+        '201':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '409': { $ref: '#/components/responses/Error' }
+  /bookings/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getBooking
+      tags: [Bookings]
+      summary: Ver una reserva con pagos, comprobantes y descargos
+      x-permission: bookings:read
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '404': { $ref: '#/components/responses/Error' }
+    patch:
+      operationId: updateBooking
+      tags: [Bookings]
+      summary: Editar notas, datos de contacto o pasajeros
+      x-permission: bookings:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateBooking' }
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+  /bookings/{id}/cancel:
+    post:
+      operationId: cancelBooking
+      tags: [Bookings]
+      summary: Cancelar una reserva
+      description: |
+        Calcula el reembolso con la política de cancelación vigente al reservar. Con `refund = POLICY`
+        devuelve lo que corresponde; con `FULL` o `NONE` fuerza el monto (requiere `bookings:override`).
+      x-permission: bookings:cancel
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, refund]
+              properties:
+                reason: { type: string }
+                refund: { type: string, enum: [POLICY, FULL, NONE] }
+      responses:
+        '200':
+          description: Reserva cancelada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+        '409': { $ref: '#/components/responses/Error' }
+  /bookings/{id}/reschedule:
+    post:
+      operationId: rescheduleBooking
+      tags: [Bookings]
+      summary: Mover una reserva a otra salida
+      description: Si cambia el precio, devuelve `adjustment` con el cobro adicional o el reembolso parcial.
+      x-permission: bookings:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetDepartureId]
+              properties:
+                targetDepartureId: { type: string, format: uuid }
+                reason: { type: string }
+      responses:
+        '200':
+          description: Reserva movida
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [booking]
+                properties:
+                  booking: { $ref: '#/components/schemas/Booking' }
+                  adjustment:
+                    type: object
+                    properties:
+                      type: { type: string, enum: [CHARGE, REFUND] }
+                      amountCents: { type: integer }
+        '409': { $ref: '#/components/responses/Error' }
+  /bookings/{id}/status:
+    post:
+      operationId: setBookingStatus
+      tags: [Bookings]
+      summary: Marcar una reserva como completada o no-show
+      x-permission: bookings:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [COMPLETED, NO_SHOW] }
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Booking' }
+  /bookings/{id}/payment-links:
+    post:
+      operationId: createPaymentLink
+      tags: [Payments]
+      summary: Generar un enlace de pago
+      description: Para cobrar el total, el depósito o el saldo de una reserva (también enviado por email/WhatsApp).
+      x-permission: payments:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind]
+              properties:
+                kind: { $ref: '#/components/schemas/PaymentKind' }
+                amountCents:
+                  type: integer
+                  description: Opcional; por defecto el monto pendiente de ese tipo.
+                expiresInHours: { type: integer, minimum: 1, maximum: 720, default: 48 }
+      responses:
+        '201':
+          description: Enlace
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PaymentLink' }
+  /bookings/{id}/payments/manual:
+    post:
+      operationId: recordManualPayment
+      tags: [Payments]
+      summary: Registrar un pago manual
+      description: Efectivo, transferencia o Yape personal. No pasa por pasarela.
+      x-permission: payments:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method, kind, amountCents, currency]
+              properties:
+                method:
+                  type: string
+                  enum: [CASH, TRANSFER, YAPE, OTHER]
+                kind: { $ref: '#/components/schemas/PaymentKind' }
+                amountCents: { type: integer, minimum: 1 }
+                currency: { $ref: '#/components/schemas/Currency' }
+                reference: { type: string, description: Número de operación o nota. }
+                paidAt: { type: string, format: date-time }
+      responses:
+        '201':
+          description: Pago
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '409': { $ref: '#/components/responses/Error' }
+  /bookings/{id}/documents:
+    post:
+      operationId: issueDocument
+      tags: [Documents]
+      summary: Emitir el comprobante de una reserva
+      x-permission: documents:issue
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                paymentId:
+                  type: string
+                  format: uuid
+                  description: Pago al que corresponde; por defecto el total cobrado.
+                docType:
+                  type: string
+                  enum: [BOLETA, FACTURA]
+                  description: Por defecto el elegido por el cliente al reservar.
+      responses:
+        '202':
+          description: Emisión encolada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  # ---------------------------------------------------------------- Payments
+  /payments:
+    get:
+      operationId: listPayments
+      tags: [Payments]
+      summary: Listar pagos
+      x-permission: payments:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/PaymentStatus' }
+        - name: provider
+          in: query
+          schema: { $ref: '#/components/schemas/PaymentProvider' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Pagos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payment' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /payments/{id}:
+    get:
+      operationId: getPayment
+      tags: [Payments]
+      summary: Ver un pago
+      x-permission: payments:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Pago
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '404': { $ref: '#/components/responses/Error' }
+  /payments/{id}/refunds:
+    post:
+      operationId: createRefund
+      tags: [Payments]
+      summary: Reembolsar un pago
+      description: |
+        Ejecuta la devolución en la pasarela (o la registra si el pago fue manual), actualiza la reserva y
+        emite la nota de crédito si había comprobante. Los montos superiores al tope del operador requieren
+        `payments:refund-any`.
+      x-permission: payments:refund
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amountCents, reason]
+              properties:
+                amountCents: { type: integer, minimum: 1 }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Reembolso
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Refund' }
+        '403': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+  /refunds:
+    get:
+      operationId: listRefunds
+      tags: [Payments]
+      summary: Listar reembolsos
+      x-permission: payments:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Reembolsos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Refund' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /disputes:
+    get:
+      operationId: listDisputes
+      tags: [Payments]
+      summary: Listar disputas y contracargos
+      x-permission: payments:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DisputeStatus' }
+      responses:
+        '200':
+          description: Disputas
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Dispute' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /disputes/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getDispute
+      tags: [Payments]
+      summary: Ver una disputa
+      x-permission: payments:read
+      responses:
+        '200':
+          description: Disputa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+    patch:
+      operationId: updateDispute
+      tags: [Payments]
+      summary: Actualizar estado o notas de una disputa
+      x-permission: payments:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { $ref: '#/components/schemas/DisputeStatus' }
+                notes: { type: string }
+      responses:
+        '200':
+          description: Disputa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dispute' }
+  /disputes/{id}/evidence:
+    get:
+      operationId: downloadDisputeEvidence
+      tags: [Payments]
+      summary: Descargar el paquete de evidencia de una disputa
+      description: ZIP con confirmación, políticas aceptadas, descargo firmado, manifiesto y comprobante.
+      x-permission: payments:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Paquete
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+
+  # --------------------------------------------------------------- Documents
+  /documents:
+    get:
+      operationId: listDocuments
+      tags: [Documents]
+      summary: Listar comprobantes
+      x-permission: documents:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/DocumentStatus' }
+        - name: docType
+          in: query
+          schema: { $ref: '#/components/schemas/DocumentType' }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Comprobantes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Document' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /documents/{id}:
+    get:
+      operationId: getDocument
+      tags: [Documents]
+      summary: Ver un comprobante
+      x-permission: documents:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Comprobante
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+        '404': { $ref: '#/components/responses/Error' }
+  /documents/{id}/retry:
+    post:
+      operationId: retryDocument
+      tags: [Documents]
+      summary: Reintentar el envío de un comprobante en error o rechazado
+      x-permission: documents:issue
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '202':
+          description: Reencolado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+  /documents/{id}/void:
+    post:
+      operationId: voidDocument
+      tags: [Documents]
+      summary: Anular un comprobante (comunicación de baja)
+      x-permission: documents:void
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '202':
+          description: Anulación encolada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+  /documents/{id}/credit-note:
+    post:
+      operationId: createCreditNote
+      tags: [Documents]
+      summary: Emitir una nota de crédito sobre un comprobante
+      x-permission: documents:void
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, amountCents]
+              properties:
+                reason: { type: string }
+                amountCents: { type: integer, minimum: 1 }
+      responses:
+        '202':
+          description: Nota de crédito encolada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Document' }
+  /documents/{id}/files/{kind}:
+    get:
+      operationId: downloadDocumentFile
+      tags: [Documents]
+      summary: Descargar el XML, el CDR o el PDF
+      x-permission: documents:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [xml, cdr, pdf] }
+      responses:
+        '200':
+          description: Archivo
+          content:
+            application/xml:
+              schema: { type: string }
+            application/pdf:
+              schema: { type: string, format: binary }
+            application/zip:
+              schema: { type: string, format: binary }
+        '404': { $ref: '#/components/responses/Error' }
+
+  # --------------------------------------------------------------- Customers
+  /customers:
+    get:
+      operationId: listCustomers
+      tags: [Customers]
+      summary: Listar clientes
+      x-permission: customers:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: q
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Clientes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Customer' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /customers/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Id'
+    get:
+      operationId: getCustomer
+      tags: [Customers]
+      summary: Ver un cliente con su historial de reservas
+      x-permission: customers:read
+      responses:
+        '200':
+          description: Cliente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Customer' }
+    patch:
+      operationId: updateCustomer
+      tags: [Customers]
+      summary: Editar un cliente
+      x-permission: customers:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CustomerInput' }
+      responses:
+        '200':
+          description: Cliente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Customer' }
+  /customers/{id}/erase:
+    post:
+      operationId: eraseCustomer
+      tags: [Customers]
+      summary: Atender un pedido de eliminación de datos (ARCO)
+      description: Anonimiza lo que no deba conservarse por obligación legal (comprobantes).
+      x-permission: customers:erase
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '204': { description: Procesado }
+
+  # -------------------------------------------------------------- Compliance
+  /complaints:
+    get:
+      operationId: listComplaints
+      tags: [Compliance]
+      summary: Listar reclamos y quejas
+      x-permission: complaints:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/ComplaintStatus' }
+      responses:
+        '200':
+          description: Reclamos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Complaint' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+  /complaints/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: integer }
+    get:
+      operationId: getComplaint
+      tags: [Compliance]
+      summary: Ver un reclamo
+      x-permission: complaints:read
+      responses:
+        '200':
+          description: Reclamo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Complaint' }
+  /complaints/{id}/answer:
+    post:
+      operationId: answerComplaint
+      tags: [Compliance]
+      summary: Responder un reclamo
+      description: Guarda la respuesta y la envía por correo al consumidor.
+      x-permission: complaints:write
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answer]
+              properties:
+                answer: { type: string }
+      responses:
+        '200':
+          description: Reclamo respondido
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Complaint' }
+  /waivers:
+    get:
+      operationId: listWaivers
+      tags: [Compliance]
+      summary: Listar descargos de responsabilidad
+      x-permission: waivers:read
+      parameters:
+        - name: bookingId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { $ref: '#/components/schemas/WaiverStatus' }
+      responses:
+        '200':
+          description: Descargos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Waiver' }
+  /legal-documents:
+    post:
+      operationId: publishLegalDocument
+      tags: [Compliance]
+      summary: Publicar una nueva versión de un documento legal
+      x-permission: legal:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, locale, cmsSlug]
+              properties:
+                kind: { $ref: '#/components/schemas/LegalDocumentKind' }
+                locale: { type: string }
+                cmsSlug: { type: string }
+      responses:
+        '201':
+          description: Versión publicada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegalDocument' }
+
+  # ------------------------------------------------------------------- Admin
+  /users:
+    get:
+      operationId: listUsers
+      tags: [Admin]
+      summary: Listar usuarios del staff
+      x-permission: users:read
+      responses:
+        '200':
+          description: Usuarios
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+    post:
+      operationId: createUser
+      tags: [Admin]
+      summary: Dar de alta a un usuario (correo del dominio de la empresa)
+      x-permission: users:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name, roleId]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                roleId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Usuario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+  /users/{id}:
+    patch:
+      operationId: updateUser
+      tags: [Admin]
+      summary: Cambiar rol o desactivar a un usuario
+      x-permission: users:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                roleId: { type: string, format: uuid }
+                active: { type: boolean }
+      responses:
+        '200':
+          description: Usuario
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+  /roles:
+    get:
+      operationId: listRoles
+      tags: [Admin]
+      summary: Listar roles y permisos
+      x-permission: users:read
+      responses:
+        '200':
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Role' }
+  /companies/current:
+    get:
+      operationId: getCompany
+      tags: [Admin]
+      summary: Datos fiscales de la empresa emisora
+      x-permission: company:read
+      responses:
+        '200':
+          description: Empresa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Company' }
+    put:
+      operationId: saveCompany
+      tags: [Admin]
+      summary: Guardar los datos fiscales de la empresa
+      description: El certificado digital y las credenciales SOL no pasan por este API; viven en `desertica-billing`.
+      x-permission: company:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompanyInput' }
+      responses:
+        '200':
+          description: Empresa
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Company' }
+  /series:
+    get:
+      operationId: listSeries
+      tags: [Admin]
+      summary: Listar series de comprobantes
+      x-permission: company:read
+      responses:
+        '200':
+          description: Series
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Series' }
+    post:
+      operationId: createSeries
+      tags: [Admin]
+      summary: Crear una serie
+      x-permission: company:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [docType, prefix]
+              properties:
+                docType: { $ref: '#/components/schemas/DocumentType' }
+                prefix: { type: string, pattern: '^[BFE][A-Z0-9]{3}$' }
+                nextNumber: { type: integer, minimum: 1, default: 1 }
+      responses:
+        '201':
+          description: Serie
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Series' }
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [Admin]
+      summary: Leer los ajustes operativos
+      x-permission: settings:read
+      responses:
+        '200':
+          description: Ajustes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    put:
+      operationId: saveSettings
+      tags: [Admin]
+      summary: Guardar ajustes operativos
+      description: Tope de reembolso del operador, duración del bloqueo de cupo, plantillas de email y similares.
+      x-permission: settings:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Ajustes
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /blocked-identities:
+    get:
+      operationId: listBlockedIdentities
+      tags: [Admin]
+      summary: Listar correos e IP bloqueados
+      x-permission: fraud:read
+      responses:
+        '200':
+          description: Bloqueos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/BlockedIdentity' }
+    post:
+      operationId: createBlockedIdentity
+      tags: [Admin]
+      summary: Bloquear un correo o una IP
+      x-permission: fraud:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, value]
+              properties:
+                kind: { type: string, enum: [EMAIL, IP] }
+                value: { type: string }
+                reason: { type: string }
+      responses:
+        '201':
+          description: Bloqueo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BlockedIdentity' }
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [Admin]
+      summary: Consultar la auditoría
+      x-permission: audit:read
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+        - name: entity
+          in: query
+          schema: { type: string }
+        - name: entityId
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: Eventos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AuditLog' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+
+  # ----------------------------------------------------------------- Reports
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [Reports]
+      summary: Resumen del panel (ventas, ocupación y pendientes)
+      x-permission: reports:read
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Resumen
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DashboardSummary' }
+  /reports/sales:
+    get:
+      operationId: getSalesReport
+      tags: [Reports]
+      summary: Reporte de ventas
+      x-permission: reports:read
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: groupBy
+          in: query
+          schema: { type: string, enum: [day, tour, provider], default: day }
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+      responses:
+        '200':
+          description: Reporte
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [key, currency, grossCents, refundedCents, bookings]
+                      properties:
+                        key: { type: string }
+                        currency: { $ref: '#/components/schemas/Currency' }
+                        grossCents: { type: integer }
+                        refundedCents: { type: integer }
+                        bookings: { type: integer }
+            text/csv:
+              schema: { type: string }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    bookingToken:
+      type: apiKey
+      in: header
+      name: X-Booking-Token
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Reference:
+      name: reference
+      in: path
+      required: true
+      schema: { type: string, example: DST-7K4Q9M }
+    TourSlug:
+      name: slug
+      in: path
+      required: true
+      schema: { type: string, example: dune-buggy }
+    LinkToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    PageSize:
+      name: pageSize
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      schema: { type: string, maxLength: 128 }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    # ----------------------------------------------------------- Comunes
+    Error:
+      type: object
+      required: [statusCode, error, message]
+      properties:
+        statusCode: { type: integer }
+        error: { type: string }
+        message:
+          oneOf:
+            - type: string
+            - type: array
+              items: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+    Meta:
+      type: object
+      required: [page, pageSize, total]
+      properties:
+        page: { type: integer }
+        pageSize: { type: integer }
+        total: { type: integer }
+    Currency:
+      type: string
+      enum: [USD, PEN]
+    IdDocType:
+      type: string
+      enum: [DNI, CE, PASSPORT, RUC]
+    TourFormat:
+      type: string
+      enum: [SHARED, PRIVATE]
+    PriceUnit:
+      type: string
+      enum: [PER_PERSON, PER_GROUP]
+    DepartureStatus:
+      type: string
+      enum: [OPEN, CLOSED, CANCELLED, COMPLETED]
+    BookingStatus:
+      type: string
+      enum: [PENDING_PAYMENT, CONFIRMED, COMPLETED, CANCELLED, NO_SHOW]
+    PaymentProvider:
+      type: string
+      enum: [STRIPE, CULQI, MANUAL]
+    PaymentMethod:
+      type: string
+      enum: [CARD, WALLET, YAPE, CASH, TRANSFER, OTHER]
+    PaymentKind:
+      type: string
+      enum: [FULL, DEPOSIT, BALANCE]
+    PaymentStatus:
+      type: string
+      enum: [PENDING, REQUIRES_ACTION, SUCCEEDED, FAILED, CANCELLED, PARTIALLY_REFUNDED, REFUNDED, DISPUTED]
+    DisputeStatus:
+      type: string
+      enum: [OPEN, WON, LOST, CLOSED]
+    DocumentType:
+      type: string
+      enum: [BOLETA, FACTURA, NOTA_CREDITO, NOTA_DEBITO]
+    DocumentStatus:
+      type: string
+      enum: [PENDING, ISSUED, ACCEPTED, REJECTED, VOIDED, ERROR]
+    WaiverStatus:
+      type: string
+      enum: [PENDING, SIGNED]
+    ComplaintStatus:
+      type: string
+      enum: [OPEN, IN_PROGRESS, ANSWERED]
+    LegalDocumentKind:
+      type: string
+      enum: [TERMS, PRIVACY, CANCELLATION, COOKIES, CONDUCT]
+
+    # ---------------------------------------------------------- Catálogo
+    TourRef:
+      type: object
+      required: [id, slug, title, active, requiresWaiver]
+      properties:
+        id: { type: string, format: uuid }
+        slug: { type: string }
+        title: { type: string }
+        durationHours: { type: [integer, 'null'] }
+        active: { type: boolean }
+        requiresWaiver: { type: boolean }
+        minAge: { type: [integer, 'null'] }
+        minHeightCm: { type: [integer, 'null'] }
+        defaultCapacity: { type: [integer, 'null'] }
+        cancellationPolicyId: { type: [string, 'null'], format: uuid }
+        cmsSyncedAt: { type: [string, 'null'], format: date-time }
+    UpdateTourRef:
+      type: object
+      properties:
+        active: { type: boolean }
+        requiresWaiver: { type: boolean }
+        minAge: { type: [integer, 'null'] }
+        minHeightCm: { type: [integer, 'null'] }
+        defaultCapacity: { type: [integer, 'null'] }
+        cancellationPolicyId: { type: [string, 'null'], format: uuid }
+    Departure:
+      type: object
+      required: [id, tourRefId, startsAt, capacity, seatsSold, format, language, status]
+      properties:
+        id: { type: string, format: uuid }
+        tourRefId: { type: string, format: uuid }
+        startsAt: { type: string, format: date-time }
+        capacity: { type: integer }
+        seatsSold: { type: integer }
+        seatsHeld: { type: integer }
+        format: { $ref: '#/components/schemas/TourFormat' }
+        language: { type: string }
+        status: { $ref: '#/components/schemas/DepartureStatus' }
+        meetingPoint: { type: [string, 'null'] }
+        guideName: { type: [string, 'null'] }
+        vehicleNote: { type: [string, 'null'] }
+        notes: { type: [string, 'null'] }
+        cutoffMinutes: { type: integer }
+    CreateDeparture:
+      type: object
+      required: [tourRefId, startsAt, capacity]
+      properties:
+        tourRefId: { type: string, format: uuid }
+        startsAt: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1 }
+        format: { $ref: '#/components/schemas/TourFormat' }
+        language: { type: string }
+        meetingPoint: { type: string }
+        guideName: { type: string }
+        vehicleNote: { type: string }
+        notes: { type: string }
+        cutoffMinutes: { type: integer, minimum: 0 }
+        repeat:
+          type: object
+          description: Crea una serie de salidas hasta `until` en los días indicados (0 = domingo).
+          required: [until, weekdays]
+          properties:
+            until: { type: string, format: date }
+            weekdays:
+              type: array
+              items: { type: integer, minimum: 0, maximum: 6 }
+    UpdateDeparture:
+      type: object
+      properties:
+        startsAt: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1 }
+        status: { type: string, enum: [OPEN, CLOSED] }
+        meetingPoint: { type: string }
+        guideName: { type: string }
+        vehicleNote: { type: string }
+        notes: { type: string }
+        cutoffMinutes: { type: integer, minimum: 0 }
+    PriceRule:
+      allOf:
+        - $ref: '#/components/schemas/PriceRuleInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    PriceRuleInput:
+      type: object
+      required: [tourRefId, currency, adultCents]
+      properties:
+        tourRefId: { type: string, format: uuid }
+        currency: { $ref: '#/components/schemas/Currency' }
+        format: { $ref: '#/components/schemas/TourFormat' }
+        unit: { $ref: '#/components/schemas/PriceUnit' }
+        adultCents: { type: integer, minimum: 0, description: Con IGV incluido. }
+        childCents: { type: [integer, 'null'], minimum: 0 }
+        groupCents: { type: [integer, 'null'], minimum: 0 }
+        minPeople: { type: [integer, 'null'] }
+        maxPeople: { type: [integer, 'null'] }
+        validFrom: { type: [string, 'null'], format: date }
+        validTo: { type: [string, 'null'], format: date }
+        priority: { type: integer, default: 0 }
+        active: { type: boolean, default: true }
+    Blackout:
+      allOf:
+        - $ref: '#/components/schemas/BlackoutInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    BlackoutInput:
+      type: object
+      required: [startsOn, endsOn]
+      properties:
+        tourRefId: { type: [string, 'null'], format: uuid, description: Nulo = todos los tours. }
+        startsOn: { type: string, format: date }
+        endsOn: { type: string, format: date }
+        reason: { type: string }
+    CancellationPolicyInput:
+      type: object
+      required: [key, name, tiers]
+      properties:
+        key: { type: string }
+        name: { type: string }
+        tiers:
+          type: array
+          description: Ordenados de mayor a menor `hoursBefore`.
+          items:
+            type: object
+            required: [hoursBefore, refundPercent]
+            properties:
+              hoursBefore: { type: integer, minimum: 0 }
+              refundPercent: { type: integer, minimum: 0, maximum: 100 }
+        depositRefundable: { type: boolean }
+    CancellationPolicy:
+      allOf:
+        - $ref: '#/components/schemas/CancellationPolicyInput'
+        - type: object
+          required: [id, version, active]
+          properties:
+            id: { type: string, format: uuid }
+            version: { type: integer }
+            active: { type: boolean }
+
+    # -------------------------------------------------- Público / reserva
+    AvailableDeparture:
+      type: object
+      required: [departureId, startsAt, language, format, seatsLeft, price]
+      properties:
+        departureId: { type: string, format: uuid }
+        startsAt: { type: string, format: date-time }
+        language: { type: string }
+        format: { $ref: '#/components/schemas/TourFormat' }
+        seatsLeft: { type: integer }
+        meetingPoint: { type: [string, 'null'] }
+        price:
+          type: object
+          required: [currency, unit, adultCents]
+          properties:
+            currency: { $ref: '#/components/schemas/Currency' }
+            unit: { $ref: '#/components/schemas/PriceUnit' }
+            adultCents: { type: integer }
+            childCents: { type: [integer, 'null'] }
+            groupCents: { type: [integer, 'null'] }
+    QuoteRequest:
+      type: object
+      required: [departureId, adults, currency]
+      properties:
+        departureId: { type: string, format: uuid }
+        adults: { type: integer, minimum: 1 }
+        children: { type: integer, minimum: 0, default: 0 }
+        currency: { $ref: '#/components/schemas/Currency' }
+    Quote:
+      type: object
+      required: [currency, totalCents, depositCents, lines]
+      properties:
+        currency: { $ref: '#/components/schemas/Currency' }
+        totalCents: { type: integer, description: Con IGV incluido. }
+        depositCents: { type: integer, description: Monto del depósito según la configuración. }
+        lines:
+          type: array
+          items:
+            type: object
+            required: [label, quantity, unitCents, totalCents]
+            properties:
+              label: { type: string }
+              quantity: { type: integer }
+              unitCents: { type: integer }
+              totalCents: { type: integer }
+        cancellationTiers:
+          type: array
+          items:
+            type: object
+            properties:
+              hoursBefore: { type: integer }
+              refundPercent: { type: integer }
+    Hold:
+      type: object
+      required: [token, departureId, seats, expiresAt]
+      properties:
+        token: { type: string }
+        departureId: { type: string, format: uuid }
+        seats: { type: integer }
+        expiresAt: { type: string, format: date-time }
+    Billing:
+      type: object
+      required: [docType, name, idDocType, idDocNumber]
+      description: Datos del receptor del comprobante.
+      properties:
+        docType: { type: string, enum: [BOLETA, FACTURA] }
+        name: { type: string, description: Nombre o razón social. }
+        idDocType: { $ref: '#/components/schemas/IdDocType' }
+        idDocNumber: { type: string }
+        address: { type: string }
+        email: { type: string, format: email }
+    CustomerInput:
+      type: object
+      required: [email, firstName, lastName]
+      properties:
+        email: { type: string, format: email }
+        firstName: { type: string }
+        lastName: { type: string }
+        phone: { type: string }
+        country: { type: string, minLength: 2, maxLength: 2 }
+        idDocType: { $ref: '#/components/schemas/IdDocType' }
+        idDocNumber: { type: string }
+        locale: { type: string }
+    PassengerInput:
+      type: object
+      required: [firstName, lastName]
+      properties:
+        firstName: { type: string }
+        lastName: { type: string }
+        idDocType: { $ref: '#/components/schemas/IdDocType' }
+        idDocNumber: { type: string }
+        birthDate: { type: string, format: date }
+        nationality: { type: string }
+        emergencyContactName: { type: string }
+        emergencyContactPhone: { type: string }
+    Attribution:
+      type: object
+      properties:
+        utmSource: { type: string }
+        utmMedium: { type: string }
+        utmCampaign: { type: string }
+        utmContent: { type: string }
+        utmTerm: { type: string }
+        gclid: { type: string }
+        fbclid: { type: string }
+        landingPath: { type: string }
+        referrer: { type: string }
+    CreatePublicBooking:
+      type: object
+      required: [holdToken, currency, adults, customer, billing, paymentKind, acceptedLegalDocumentIds]
+      properties:
+        holdToken: { type: string }
+        currency: { $ref: '#/components/schemas/Currency' }
+        adults: { type: integer, minimum: 1 }
+        children: { type: integer, minimum: 0, default: 0 }
+        customer: { $ref: '#/components/schemas/CustomerInput' }
+        passengers:
+          type: array
+          items: { $ref: '#/components/schemas/PassengerInput' }
+        billing: { $ref: '#/components/schemas/Billing' }
+        paymentKind: { type: string, enum: [FULL, DEPOSIT] }
+        acceptedLegalDocumentIds:
+          type: array
+          description: Versiones de términos, privacidad y política de cancelación aceptadas.
+          items: { type: string, format: uuid }
+        notes: { type: string, maxLength: 1000 }
+        locale: { type: string }
+        attribution: { $ref: '#/components/schemas/Attribution' }
+        turnstileToken: { type: string }
+    CreateManualBooking:
+      type: object
+      required: [departureId, currency, adults, customer, billing]
+      properties:
+        departureId: { type: string, format: uuid }
+        currency: { $ref: '#/components/schemas/Currency' }
+        adults: { type: integer, minimum: 1 }
+        children: { type: integer, minimum: 0, default: 0 }
+        customer: { $ref: '#/components/schemas/CustomerInput' }
+        passengers:
+          type: array
+          items: { $ref: '#/components/schemas/PassengerInput' }
+        billing: { $ref: '#/components/schemas/Billing' }
+        depositCents: { type: integer, minimum: 0 }
+        overrideTotalCents:
+          type: integer
+          minimum: 0
+          description: Precio acordado distinto del de lista; requiere `bookings:override`.
+        notes: { type: string }
+        sendConfirmation: { type: boolean, default: true }
+    UpdateBooking:
+      type: object
+      properties:
+        notes: { type: string }
+        customer: { $ref: '#/components/schemas/CustomerInput' }
+        billing: { $ref: '#/components/schemas/Billing' }
+        passengers:
+          type: array
+          items: { $ref: '#/components/schemas/PassengerInput' }
+    Passenger:
+      allOf:
+        - $ref: '#/components/schemas/PassengerInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    BookingSummary:
+      type: object
+      required: [id, reference, status, departureId, startsAt, tourSlug, customerName, currency, totalCents, paidCents]
+      properties:
+        id: { type: string, format: uuid }
+        reference: { type: string }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        source: { type: string, enum: [WEB, MANUAL] }
+        departureId: { type: string, format: uuid }
+        startsAt: { type: string, format: date-time }
+        tourSlug: { type: string }
+        customerName: { type: string }
+        adults: { type: integer }
+        children: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        totalCents: { type: integer }
+        paidCents: { type: integer }
+        createdAt: { type: string, format: date-time }
+    Booking:
+      allOf:
+        - $ref: '#/components/schemas/BookingSummary'
+        - type: object
+          properties:
+            customer: { $ref: '#/components/schemas/Customer' }
+            depositCents: { type: [integer, 'null'] }
+            refundedCents: { type: integer }
+            billing: { $ref: '#/components/schemas/Billing' }
+            notes: { type: [string, 'null'] }
+            locale: { type: string }
+            priceSnapshot: { type: object, additionalProperties: true }
+            cancellationSnapshot: { type: object, additionalProperties: true }
+            attribution: { $ref: '#/components/schemas/Attribution' }
+            cancelledAt: { type: [string, 'null'], format: date-time }
+            cancelReason: { type: [string, 'null'] }
+            passengers:
+              type: array
+              items: { $ref: '#/components/schemas/Passenger' }
+            payments:
+              type: array
+              items: { $ref: '#/components/schemas/Payment' }
+            documents:
+              type: array
+              items: { $ref: '#/components/schemas/Document' }
+            waivers:
+              type: array
+              items: { $ref: '#/components/schemas/Waiver' }
+    PublicBooking:
+      type: object
+      description: Vista de la reserva para el cliente (sin datos internos).
+      required: [reference, status, tourSlug, startsAt, currency, totalCents, paidCents, pendingCents]
+      properties:
+        reference: { type: string }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        tourSlug: { type: string }
+        startsAt: { type: string, format: date-time }
+        meetingPoint: { type: [string, 'null'] }
+        adults: { type: integer }
+        children: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        totalCents: { type: integer }
+        paidCents: { type: integer }
+        pendingCents: { type: integer }
+        depositCents: { type: [integer, 'null'] }
+        cancellationTiers:
+          type: array
+          items:
+            type: object
+            properties:
+              hoursBefore: { type: integer }
+              refundPercent: { type: integer }
+        waivers:
+          type: array
+          items:
+            type: object
+            properties:
+              token: { type: string }
+              passengerName: { type: [string, 'null'] }
+              status: { $ref: '#/components/schemas/WaiverStatus' }
+        documents:
+          type: array
+          items:
+            type: object
+            properties:
+              docType: { $ref: '#/components/schemas/DocumentType' }
+              number: { type: string, example: B001-00000012 }
+              pdfUrl: { type: string, format: uri }
+    PublicBookingCreated:
+      type: object
+      required: [booking, accessToken]
+      properties:
+        booking: { $ref: '#/components/schemas/PublicBooking' }
+        accessToken:
+          type: string
+          description: Se envía como `X-Booking-Token` en las llamadas siguientes y por email.
+        paymentOptions:
+          type: array
+          description: Pasarelas disponibles para la moneda de la reserva.
+          items:
+            type: object
+            required: [provider, kinds]
+            properties:
+              provider: { type: string, enum: [STRIPE, CULQI] }
+              kinds:
+                type: array
+                items: { $ref: '#/components/schemas/PaymentKind' }
+
+    # ------------------------------------------------------------- Pagos
+    CreatePaymentRequest:
+      type: object
+      required: [kind]
+      properties:
+        kind: { $ref: '#/components/schemas/PaymentKind' }
+    CulqiChargeRequest:
+      type: object
+      required: [kind, token, email]
+      properties:
+        kind: { $ref: '#/components/schemas/PaymentKind' }
+        token: { type: string, description: Token generado por Culqi.js en el navegador. }
+        email: { type: string, format: email }
+    StripeIntent:
+      type: object
+      required: [paymentId, clientSecret, publishableKey, amountCents, currency]
+      properties:
+        paymentId: { type: string, format: uuid }
+        clientSecret: { type: string }
+        publishableKey: { type: string }
+        amountCents: { type: integer }
+        currency: { type: string, enum: [USD] }
+    CulqiChargeResult:
+      type: object
+      required: [paymentId, status]
+      properties:
+        paymentId: { type: string, format: uuid }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        action:
+          type: object
+          description: Presente cuando el banco exige autenticación 3DS.
+          properties:
+            type: { type: string, enum: [THREE_DS] }
+            parameters: { type: object, additionalProperties: true }
+        failureMessage: { type: [string, 'null'] }
+    PaymentLink:
+      type: object
+      required: [id, token, url, kind, currency, amountCents, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        token: { type: string }
+        url: { type: string, format: uri }
+        kind: { $ref: '#/components/schemas/PaymentKind' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        amountCents: { type: integer }
+        expiresAt: { type: string, format: date-time }
+        usedAt: { type: [string, 'null'], format: date-time }
+    PaymentLinkInfo:
+      type: object
+      required: [reference, kind, currency, amountCents, expiresAt, paymentOptions]
+      properties:
+        reference: { type: string }
+        tourSlug: { type: string }
+        startsAt: { type: string, format: date-time }
+        kind: { $ref: '#/components/schemas/PaymentKind' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        amountCents: { type: integer }
+        expiresAt: { type: string, format: date-time }
+        paymentOptions:
+          type: array
+          items: { type: string, enum: [STRIPE, CULQI] }
+    Payment:
+      type: object
+      required: [id, bookingId, provider, method, kind, status, currency, amountCents]
+      properties:
+        id: { type: string, format: uuid }
+        bookingId: { type: string, format: uuid }
+        bookingReference: { type: string }
+        provider: { $ref: '#/components/schemas/PaymentProvider' }
+        method: { $ref: '#/components/schemas/PaymentMethod' }
+        kind: { $ref: '#/components/schemas/PaymentKind' }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        currency: { $ref: '#/components/schemas/Currency' }
+        amountCents: { type: integer }
+        refundedCents: { type: integer }
+        providerRef: { type: [string, 'null'] }
+        failureCode: { type: [string, 'null'] }
+        paidAt: { type: [string, 'null'], format: date-time }
+        createdAt: { type: string, format: date-time }
+    Refund:
+      type: object
+      required: [id, paymentId, amountCents, reason, status]
+      properties:
+        id: { type: string, format: uuid }
+        paymentId: { type: string, format: uuid }
+        amountCents: { type: integer }
+        reason: { type: string }
+        status: { type: string, enum: [PENDING, SUCCEEDED, FAILED] }
+        creditNoteId: { type: [string, 'null'], format: uuid }
+        requestedBy: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+    Dispute:
+      type: object
+      required: [id, paymentId, provider, status, amountCents, currency]
+      properties:
+        id: { type: string, format: uuid }
+        paymentId: { type: string, format: uuid }
+        provider: { $ref: '#/components/schemas/PaymentProvider' }
+        providerRef: { type: string }
+        status: { $ref: '#/components/schemas/DisputeStatus' }
+        reason: { type: [string, 'null'] }
+        amountCents: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        evidenceDueAt: { type: [string, 'null'], format: date-time }
+        notes: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+
+    # ------------------------------------------------------ Comprobantes
+    Document:
+      type: object
+      required: [id, bookingId, docType, status, series, number, currency, totalCents, taxableCents, igvCents]
+      properties:
+        id: { type: string, format: uuid }
+        bookingId: { type: string, format: uuid }
+        paymentId: { type: [string, 'null'], format: uuid }
+        docType: { $ref: '#/components/schemas/DocumentType' }
+        status: { $ref: '#/components/schemas/DocumentStatus' }
+        series: { type: string, example: B001 }
+        number: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        totalCents: { type: integer }
+        taxableCents: { type: integer, description: Base imponible. }
+        igvCents: { type: integer }
+        exchangeRate: { type: [string, 'null'], description: Tipo de cambio SUNAT si es en USD. }
+        sunatCode: { type: [string, 'null'] }
+        sunatMessage: { type: [string, 'null'] }
+        relatedDocumentId: { type: [string, 'null'], format: uuid }
+        hasXml: { type: boolean }
+        hasCdr: { type: boolean }
+        hasPdf: { type: boolean }
+        issuedAt: { type: [string, 'null'], format: date-time }
+        voidedAt: { type: [string, 'null'], format: date-time }
+
+    # ---------------------------------------------------- Clientes y legal
+    Customer:
+      allOf:
+        - $ref: '#/components/schemas/CustomerInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+            bookings:
+              type: array
+              items: { $ref: '#/components/schemas/BookingSummary' }
+    Waiver:
+      type: object
+      required: [id, bookingId, status, version]
+      properties:
+        id: { type: string, format: uuid }
+        bookingId: { type: string, format: uuid }
+        passengerId: { type: [string, 'null'], format: uuid }
+        version: { type: integer }
+        status: { $ref: '#/components/schemas/WaiverStatus' }
+        signerName: { type: [string, 'null'] }
+        signedAt: { type: [string, 'null'], format: date-time }
+        hasPdf: { type: boolean }
+    WaiverForm:
+      type: object
+      required: [status, version, tourSlug, startsAt]
+      properties:
+        status: { $ref: '#/components/schemas/WaiverStatus' }
+        version: { type: integer }
+        tourSlug: { type: string }
+        startsAt: { type: string, format: date-time }
+        passengerName: { type: [string, 'null'] }
+        minAge: { type: [integer, 'null'] }
+        minHeightCm: { type: [integer, 'null'] }
+    LegalDocument:
+      type: object
+      required: [id, kind, locale, version, cmsSlug, publishedAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/LegalDocumentKind' }
+        locale: { type: string }
+        version: { type: integer }
+        cmsSlug: { type: string }
+        publishedAt: { type: string, format: date-time }
+    CreateComplaint:
+      type: object
+      required: [kind, goodType, consumerName, idDocType, idDocNumber, address, email, description, detail, request]
+      properties:
+        kind: { type: string, enum: [RECLAMO, QUEJA] }
+        goodType: { type: string, enum: [PRODUCT, SERVICE] }
+        consumerName: { type: string }
+        idDocType: { $ref: '#/components/schemas/IdDocType' }
+        idDocNumber: { type: string }
+        address: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+        isMinor: { type: boolean }
+        bookingRef: { type: string }
+        amountCents: { type: integer }
+        currency: { $ref: '#/components/schemas/Currency' }
+        description: { type: string, description: Identificación del bien contratado. }
+        detail: { type: string }
+        request: { type: string, description: Pedido del consumidor. }
+        turnstileToken: { type: string }
+    Complaint:
+      allOf:
+        - $ref: '#/components/schemas/CreateComplaint'
+        - type: object
+          required: [id, status, dueAt, createdAt]
+          properties:
+            id: { type: integer }
+            status: { $ref: '#/components/schemas/ComplaintStatus' }
+            answer: { type: [string, 'null'] }
+            answeredAt: { type: [string, 'null'], format: date-time }
+            dueAt: { type: string, format: date-time }
+            createdAt: { type: string, format: date-time }
+
+    # ------------------------------------------------------------- Admin
+    Session:
+      type: object
+      required: [accessToken, refreshToken, expiresIn, user]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        expiresIn: { type: integer, description: Segundos de vigencia del token de acceso. }
+        user: { $ref: '#/components/schemas/User' }
+    Role:
+      type: object
+      required: [id, key, name, permissions]
+      properties:
+        id: { type: string, format: uuid }
+        key: { type: string }
+        name: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+    User:
+      type: object
+      required: [id, email, name, active, role]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        active: { type: boolean }
+        role: { $ref: '#/components/schemas/Role' }
+        lastLoginAt: { type: [string, 'null'], format: date-time }
+    CompanyInput:
+      type: object
+      required: [ruc, legalName, fiscalAddress]
+      properties:
+        ruc: { type: string, pattern: '^\d{11}$' }
+        legalName: { type: string }
+        tradeName: { type: string }
+        fiscalAddress: { type: string }
+        ubigeo: { type: string, pattern: '^\d{6}$' }
+        igvRate: { type: string, example: '0.1800' }
+        environment: { type: string, enum: [BETA, PRODUCTION] }
+    Company:
+      allOf:
+        - $ref: '#/components/schemas/CompanyInput'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    Series:
+      type: object
+      required: [id, docType, prefix, nextNumber, active]
+      properties:
+        id: { type: string, format: uuid }
+        docType: { $ref: '#/components/schemas/DocumentType' }
+        prefix: { type: string }
+        nextNumber: { type: integer }
+        active: { type: boolean }
+    BlockedIdentity:
+      type: object
+      required: [id, kind, value]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [EMAIL, IP] }
+        value: { type: string }
+        reason: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+    AuditLog:
+      type: object
+      required: [id, action, entity, entityId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        actor: { type: [string, 'null'] }
+        action: { type: string }
+        entity: { type: string }
+        entityId: { type: string }
+        before: { type: [object, 'null'], additionalProperties: true }
+        after: { type: [object, 'null'], additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+
+    # ----------------------------------------------------------- Reportes
+    Manifest:
+      type: object
+      required: [departure, passengers]
+      properties:
+        departure: { $ref: '#/components/schemas/Departure' }
+        passengers:
+          type: array
+          items:
+            type: object
+            required: [bookingReference, name, waiverStatus]
+            properties:
+              bookingReference: { type: string }
+              name: { type: string }
+              idDocType: { $ref: '#/components/schemas/IdDocType' }
+              idDocNumber: { type: [string, 'null'] }
+              phone: { type: [string, 'null'] }
+              emergencyContactName: { type: [string, 'null'] }
+              emergencyContactPhone: { type: [string, 'null'] }
+              medicalNotes: { type: [string, 'null'] }
+              waiverStatus: { $ref: '#/components/schemas/WaiverStatus' }
+              balanceDueCents: { type: integer, description: Saldo por cobrar el día de la salida. }
+              currency: { $ref: '#/components/schemas/Currency' }
+    DashboardSummary:
+      type: object
+      required: [sales, occupancy, pending]
+      properties:
+        sales:
+          type: array
+          items:
+            type: object
+            required: [currency, grossCents, refundedCents, bookings]
+            properties:
+              currency: { $ref: '#/components/schemas/Currency' }
+              grossCents: { type: integer }
+              refundedCents: { type: integer }
+              bookings: { type: integer }
+        occupancy:
+          type: object
+          properties:
+            seatsSold: { type: integer }
+            seatsCapacity: { type: integer }
+        pending:
+          type: object
+          properties:
+            unpaidBookings: { type: integer }
+            documentsInError: { type: integer }
+            waiversPending: { type: integer }
+            openDisputes: { type: integer }
+            complaintsDueSoon: { type: integer }
