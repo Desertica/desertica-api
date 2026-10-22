@@ -5,6 +5,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { STATUS_CODES } from 'node:http';
@@ -17,6 +18,17 @@ export interface ErrorBody {
   details?: Record<string, unknown>;
 }
 
+/** Sin conexión libre en el pool o transacción abortada por carga: el cliente puede reintentar. */
+export class DatabaseBusyException extends ServiceUnavailableException {
+  constructor() {
+    super('The service is busy, retry shortly');
+  }
+}
+
+/** Error del pool de `pg` cuando `connectionTimeoutMillis` vence (no es un error conocido de Prisma). */
+const isPoolTimeout = (e: unknown) =>
+  e instanceof Error && e.message === 'timeout exceeded when trying to connect';
+
 /**
  * Normaliza toda respuesta de error al formato del contrato:
  * `{ statusCode, error, message, details? }`.
@@ -25,7 +37,10 @@ export interface ErrorBody {
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger(AllExceptionsFilter.name);
 
-  catch(exception: unknown, host: ArgumentsHost): void {
+  catch(error: unknown, host: ArgumentsHost): void {
+    const exception = isPoolTimeout(error)
+      ? new DatabaseBusyException()
+      : error;
     const http = host.switchToHttp();
     const response = http.getResponse<Response>();
     const request = http.getRequest<Request>();
@@ -38,6 +53,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
       );
     }
     if (response.headersSent) return;
+    if (exception instanceof DatabaseBusyException) {
+      response.setHeader('Retry-After', '1');
+    }
     response.status(body.statusCode).json(body);
   }
 

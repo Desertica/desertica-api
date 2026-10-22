@@ -16,6 +16,14 @@ export const envSchema = Joi.object({
   DATABASE_URL: Joi.string()
     .uri({ scheme: ['postgres', 'postgresql'] })
     .required(),
+  /** Pool de conexiones a Postgres (por instancia). */
+  DB_POOL_MAX: Joi.number().integer().min(1).max(200).default(20),
+  /** Espera máxima por una conexión del pool; vencida, la petición responde 503. */
+  DB_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(100).default(5000),
+  /** Tope de una sentencia SQL (statement_timeout). */
+  DB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(1000).default(30_000),
+  /** Cierra la sesión que deja una transacción abierta sin actividad (idle_in_transaction_session_timeout). */
+  DB_IDLE_IN_TX_TIMEOUT_MS: Joi.number().integer().min(1000).default(30_000),
   /** Opcional. Sin Redis se usan almacenes en memoria (solo válidos con una instancia). */
   REDIS_URL: Joi.string()
     .uri({ scheme: ['redis', 'rediss'] })
@@ -178,6 +186,10 @@ export interface EnvVars {
   PORT: number;
   LOG_LEVEL: string;
   DATABASE_URL: string;
+  DB_POOL_MAX: number;
+  DB_CONNECTION_TIMEOUT_MS: number;
+  DB_STATEMENT_TIMEOUT_MS: number;
+  DB_IDLE_IN_TX_TIMEOUT_MS: number;
   REDIS_URL?: string;
   CORS_ORIGINS: string;
   TRUST_PROXY: number;

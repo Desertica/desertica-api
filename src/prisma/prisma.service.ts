@@ -13,6 +13,17 @@ export class PrismaService
     super({
       adapter: new PrismaPg({
         connectionString: config.get('DATABASE_URL', { infer: true }),
+        max: config.get('DB_POOL_MAX', { infer: true }),
+        connectionTimeoutMillis: config.get('DB_CONNECTION_TIMEOUT_MS', {
+          infer: true,
+        }),
+        statement_timeout: config.get('DB_STATEMENT_TIMEOUT_MS', {
+          infer: true,
+        }),
+        idle_in_transaction_session_timeout: config.get(
+          'DB_IDLE_IN_TX_TIMEOUT_MS',
+          { infer: true },
+        ),
       }),
     });
   }
