@@ -137,21 +137,6 @@ El modelo está documentado en la cabecera de `prisma/schema.prisma`. Las migrac
 | `npm run openapi:lint` | Valida los contratos |
 | `npm run lint` | ESLint + Prettier |
 
-## MCP (Cursor)
-
-La configuración del proyecto está en `.cursor/mcp.json`. Tras abrir el repo en Cursor, habilita los servidores en **Settings → MCP**.
-
-| Servidor | Uso |
-| --- | --- |
-| `prisma-local` | CLI de Prisma (`npx prisma mcp`) |
-| `prisma-remote` | Consola Prisma (`https://mcp.prisma.io/mcp`, pide login) |
-| `postgres` | Inspección/consultas SQL sobre la DB local |
-| `context7` | Documentación actualizada de NestJS, Prisma y PostgreSQL |
-
-`postgres` usa `POSTGRES_CONNECTION_STRING` con las credenciales **locales** de desarrollo (`desertica` / `desertica`). No apuntes este MCP a producción. `prisma-remote` y Context7 pueden pedir autenticación en el cliente.
-
-Para forzar docs al día en el chat: *usa context7 para NestJS / Prisma / PostgreSQL*.
-
 ## Variables de entorno
 
 Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.validation.ts`): si falta una obligatoria o tiene un valor inválido, la API no inicia.
