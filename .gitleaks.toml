@@ -1,0 +1,12 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test fixtures, i18n keys and empty placeholders; none of these are credentials"
+paths = ['''\.spec\.ts$''', '''seed/catalog\.json$''']
+regexTarget = "line"
+regexes = [
+  '''\w+Key['"]?:\s*['"][\w.-]+['"]''',
+  '''"key":\s*"[\w.-]+"''',
+  '''_SECRET=""''',
+]
