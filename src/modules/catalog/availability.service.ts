@@ -9,6 +9,7 @@ import {
   type CancellationTier,
 } from '../../common/money';
 import { limaMonthRange } from '../../common/time/lima';
+import { Prisma } from '../../generated/prisma/client';
 import { Currency, TourFormat } from '../../generated/prisma/enums';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingsService } from '../settings/settings.service';
@@ -162,8 +163,9 @@ export class AvailabilityService {
     departure: { tourRefId: string; format: TourFormat; startsAt: Date },
     currency: Currency,
     people: number,
+    db: Prisma.TransactionClient = this.prisma,
   ) {
-    const rules = await this.prisma.priceRule.findMany({
+    const rules = await db.priceRule.findMany({
       where: {
         tourRefId: departure.tourRefId,
         currency,

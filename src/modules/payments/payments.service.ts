@@ -11,7 +11,11 @@ import {
 import { IdempotencyService } from '../../common/idempotency/idempotency.service';
 import { pendingCents } from '../../common/money';
 import { Prisma } from '../../generated/prisma/client';
-import type { Currency, PaymentKind } from '../../generated/prisma/client';
+import type {
+  Currency,
+  PaymentKind,
+  PaymentStatus,
+} from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { GatewayRegistry } from './gateway.registry';
@@ -283,131 +287,146 @@ export class PaymentsService {
     return { paymentId: payment.id };
   }
 
-  /** Fase 2: habla con la pasarela (una sola vez por pago) y arma la respuesta. */
+  /**
+   * Fase 2: habla con la pasarela (una sola vez por pago) y arma la respuesta.
+   * Sin transacción abierta durante la red: Stripe deduplica por `idempotencyKey`
+   * y Culqi se reclama con un UPDATE condicional (ver `claimCharge`).
+   */
   private async drive(paymentId: string, params: StartParams) {
     const gateway = this.gateways.get(params.provider);
-    // El candado serializa reintentos simultáneos del mismo pago; el trabajo
-    // real usa `this.prisma` para no mezclar la transacción del candado.
-    return this.prisma.$transaction(
-      async (lock) => {
-        await lock.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`pay:${paymentId}`}))`;
-        const payment = await this.prisma.payment.findUniqueOrThrow({
-          where: { id: paymentId },
-          include: { booking: { select: { reference: true } } },
-        });
-        const description = `Desertica ${payment.booking.reference}`;
+    const payment = await this.prisma.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+      include: { booking: { select: { reference: true } } },
+    });
+    const description = `Desertica ${payment.booking.reference}`;
 
-        if (params.provider === 'STRIPE') {
-          let gw: GatewayPayment;
-          try {
-            gw = payment.providerRef
-              ? await gateway.retrievePayment(payment.providerRef)
-              : await gateway.createPayment({
-                  paymentId,
-                  bookingReference: payment.booking.reference,
-                  amountCents: payment.amountCents,
-                  currency: payment.currency,
-                  description,
-                });
-          } catch (error) {
-            await this.abandon(paymentId, error);
-            throw this.mapGatewayError(error);
-          }
-          if (!payment.providerRef) {
-            await this.prisma.payment.update({
-              where: { id: paymentId },
-              data: { providerRef: gw.providerRef },
-            });
-          }
-          return {
-            paymentId,
-            clientSecret: gw.clientSecret!,
-            publishableKey: gateway.publicKey(),
-            amountCents: payment.amountCents,
-            currency: 'USD' as const,
-          };
-        }
-
-        const culqi = params.culqi!;
-        const canCharge =
-          (payment.status === 'PENDING' && !payment.providerRef) ||
-          (payment.status === 'REQUIRES_ACTION' && !!culqi.authentication3DS);
-        let failureMessage: string | null = null;
-        if (canCharge) {
-          let gw: GatewayPayment | undefined;
-          try {
-            gw = await gateway.createPayment({
+    if (params.provider === 'STRIPE') {
+      let gw: GatewayPayment;
+      try {
+        gw = payment.providerRef
+          ? await gateway.retrievePayment(payment.providerRef)
+          : await gateway.createPayment({
               paymentId,
               bookingReference: payment.booking.reference,
               amountCents: payment.amountCents,
               currency: payment.currency,
               description,
-              token: culqi.token,
-              email: culqi.email,
-              authentication3DS: culqi.authentication3DS,
             });
-          } catch (error) {
-            if (error instanceof GatewayError && error.declined) {
-              failureMessage = error.message;
-              await this.events.process('CULQI', {
-                kind: 'payment',
-                eventId: `charge:${paymentId}:FAILED`,
-                type: 'charge.declined',
-                payment: {
-                  providerRef: '',
-                  status: 'FAILED',
-                  amountCents: payment.amountCents,
-                  currency: payment.currency,
-                  failureCode: error.code ?? 'card_declined',
-                  metadata: { paymentId },
-                },
-              });
-            } else {
-              // Sin saber si se cobró: no se marca fallido; el webhook lo resuelve.
-              if (error instanceof GatewayNotConfiguredError) {
-                await this.abandon(paymentId, error);
-              }
-              throw this.mapGatewayError(error);
-            }
-          }
-          if (gw) {
-            await this.events.process('CULQI', {
-              kind: 'payment',
-              eventId: `charge:${paymentId}:${gw.status}`,
-              type: 'charge.sync',
-              payment: {
-                ...gw,
-                metadata: { ...gw.metadata, paymentId },
-              },
-            });
-          }
-        }
-
-        const after = await this.prisma.payment.findUniqueOrThrow({
-          where: { id: paymentId },
+      } catch (error) {
+        await this.abandon(paymentId, error);
+        throw this.mapGatewayError(error);
+      }
+      if (!payment.providerRef) {
+        await this.prisma.payment.updateMany({
+          where: { id: paymentId, providerRef: null },
+          data: { providerRef: gw.providerRef },
         });
-        const action =
-          after.status === 'REQUIRES_ACTION'
-            ? {
-                type: 'THREE_DS' as const,
-                parameters: {
-                  amountCents: after.amountCents,
-                  currency: after.currency,
-                  email: culqi.email,
-                },
-              }
-            : undefined;
-        return {
+      }
+      return {
+        paymentId,
+        clientSecret: gw.clientSecret!,
+        publishableKey: gateway.publicKey(),
+        amountCents: payment.amountCents,
+        currency: 'USD' as const,
+      };
+    }
+
+    const culqi = params.culqi!;
+    const canCharge =
+      (payment.status === 'PENDING' && !payment.providerRef) ||
+      (payment.status === 'REQUIRES_ACTION' && !!culqi.authentication3DS);
+    let failureMessage: string | null = null;
+    if (canCharge && (await this.claimCharge(payment))) {
+      let gw: GatewayPayment | undefined;
+      try {
+        gw = await gateway.createPayment({
           paymentId,
-          status: after.status,
-          ...(action ? { action } : {}),
-          failureMessage:
-            failureMessage ??
-            (after.status === 'FAILED' ? 'Payment failed' : null),
-        };
+          bookingReference: payment.booking.reference,
+          amountCents: payment.amountCents,
+          currency: payment.currency,
+          description,
+          token: culqi.token,
+          email: culqi.email,
+          authentication3DS: culqi.authentication3DS,
+        });
+      } catch (error) {
+        if (error instanceof GatewayError && error.declined) {
+          failureMessage = error.message;
+          await this.events.process('CULQI', {
+            kind: 'payment',
+            eventId: `charge:${paymentId}:FAILED`,
+            type: 'charge.declined',
+            payment: {
+              providerRef: '',
+              status: 'FAILED',
+              amountCents: payment.amountCents,
+              currency: payment.currency,
+              failureCode: error.code ?? 'card_declined',
+              metadata: { paymentId },
+            },
+          });
+        } else {
+          // Sin saber si se cobró: no se marca fallido; el webhook lo resuelve.
+          if (error instanceof GatewayNotConfiguredError) {
+            await this.abandon(paymentId, error);
+          }
+          throw this.mapGatewayError(error);
+        }
+      }
+      if (gw) {
+        await this.events.process('CULQI', {
+          kind: 'payment',
+          eventId: `charge:${paymentId}:${gw.status}`,
+          type: 'charge.sync',
+          payment: {
+            ...gw,
+            metadata: { ...gw.metadata, paymentId },
+          },
+        });
+      }
+    }
+
+    const after = await this.prisma.payment.findUniqueOrThrow({
+      where: { id: paymentId },
+    });
+    const action =
+      after.status === 'REQUIRES_ACTION'
+        ? {
+            type: 'THREE_DS' as const,
+            parameters: {
+              amountCents: after.amountCents,
+              currency: after.currency,
+              email: culqi.email,
+            },
+          }
+        : undefined;
+    return {
+      paymentId,
+      status: after.status,
+      ...(action ? { action } : {}),
+      failureMessage:
+        failureMessage ?? (after.status === 'FAILED' ? 'Payment failed' : null),
+    };
+  }
+
+  /**
+   * Solo una petición cobra: el UPDATE exige el `updatedAt` leído, así que el
+   * segundo reintento simultáneo no lo cumple y no vuelve a llamar a Culqi.
+   */
+  private async claimCharge(payment: {
+    id: string;
+    status: PaymentStatus;
+    updatedAt: Date;
+  }): Promise<boolean> {
+    const { count } = await this.prisma.payment.updateMany({
+      where: {
+        id: payment.id,
+        status: payment.status,
+        updatedAt: payment.updatedAt,
       },
-      { timeout: 60_000, maxWait: 15_000 },
-    );
+      data: { failureCode: null },
+    });
+    return count === 1;
   }
 
   /** La pasarela no se pudo usar: el cobro no quedará `PENDING` bloqueando nada. */

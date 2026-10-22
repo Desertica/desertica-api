@@ -20,6 +20,10 @@ COPY --chown=node:node package.json package-lock.json prisma.config.ts ./
 COPY --chown=node:node prisma ./prisma
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+# Sin devDependencies; `prisma`, `dotenv` y `tsx` son dependencias porque el despliegue corre `prisma migrate deploy` y el seed.
+RUN npm prune --omit=dev --ignore-scripts
+# Directorio de los comprobantes (DOCUMENT_STORAGE_DIR por defecto): debe existir y ser del usuario `node`.
+RUN mkdir -p /app/storage/documents && chown -R node:node /app/storage
 # Sin root: la imagen corre como el usuario `node` (uid 1000).
 USER node
 EXPOSE 3000

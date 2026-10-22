@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { addDays } from '../../common/time/lima';
+import { Prisma } from '../../generated/prisma/client';
 import { EnvVars } from '../../config/env.validation';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -31,8 +32,11 @@ export class ExchangeRateService {
     private readonly config: ConfigService<EnvVars, true>,
   ) {}
 
-  async rateFor(date: string): Promise<ExchangeRate> {
-    const byDate = await this.prisma.setting.findUnique({
+  async rateFor(
+    date: string,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<ExchangeRate> {
+    const byDate = await db.setting.findUnique({
       where: { key: 'exchangeRates' },
     });
     if (byDate?.value && typeof byDate.value === 'object') {
@@ -44,7 +48,7 @@ export class ExchangeRateService {
         }
       }
     }
-    const single = await this.prisma.setting.findUnique({
+    const single = await db.setting.findUnique({
       where: { key: 'exchangeRateUsdPen' },
     });
     const value =

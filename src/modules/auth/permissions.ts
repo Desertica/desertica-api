@@ -71,7 +71,3 @@ export const OPERATOR_PERMISSIONS: readonly Permission[] = [
   'waivers:read',
   'reports:read',
 ];
-
-export function isPermission(value: string): value is Permission {
-  return (ALL_PERMISSIONS as readonly string[]).includes(value);
-}

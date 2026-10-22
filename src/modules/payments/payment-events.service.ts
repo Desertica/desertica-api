@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { pendingCents } from '../../common/money';
 import { Prisma } from '../../generated/prisma/client';
 import type {
@@ -89,6 +89,11 @@ export class PaymentEventsService {
           if (row.processedAt) return null;
           const fx = newEffects();
           await this.apply(tx, provider, event, fx);
+          // El pago puede no estar visible todavía (el webhook llega antes que su providerRef):
+          // el evento no se da por procesado y la pasarela lo reintenta.
+          if (fx.error === 'unknown_payment') {
+            throw new ConflictException('Unknown payment');
+          }
           await tx.webhookEvent.update({
             where: { id: row.id },
             data: { processedAt: new Date(), error: fx.error ?? null },
