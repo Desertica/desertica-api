@@ -1,8 +1,4 @@
-import {
-  HttpException,
-  Injectable,
-  UnprocessableEntityException,
-} from '@nestjs/common';
+import { Injectable, UnprocessableEntityException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -101,8 +97,4 @@ export class IdempotencyService {
       { timeout: 20_000 },
     );
   }
-}
-
-export function isHttpException(e: unknown): e is HttpException {
-  return e instanceof HttpException;
 }
