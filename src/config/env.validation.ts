@@ -50,6 +50,11 @@ export const envSchema = Joi.object({
   /** Límite global por IP: peticiones por ventana. */
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(120),
   THROTTLE_TTL_MS: Joi.number().integer().min(1000).default(60_000),
+  /** Multiplica los límites por IP. Solo las pruebas e2e lo suben; fuera de `test` debe ser 1. */
+  THROTTLE_SCALE: Joi.number()
+    .min(1)
+    .default(1)
+    .when('NODE_ENV', { not: 'test', then: Joi.valid(1) }),
 
   /** Base pública de los enlaces que se envían por correo (web del cliente). */
   PUBLIC_WEB_URL: Joi.string()
@@ -95,8 +100,12 @@ export const envSchema = Joi.object({
     then: Joi.required(),
     otherwise: Joi.string().allow('').default(''),
   }),
-  /** Destino de los avisos internos (contacto, reclamos). Opcional. */
-  STAFF_NOTIFY_EMAIL: Joi.string().email().allow('').default(''),
+  /** Destino de los avisos internos (contacto, reclamos, alertas de cobros). Obligatorio en producción. */
+  STAFF_NOTIFY_EMAIL: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().email().required(),
+    otherwise: Joi.string().email().allow('').default(''),
+  }),
   /**
    * Correo saliente. `log` solo escribe en el log (desarrollo y pruebas; muestra los enlaces con
    * tokens); producción exige `smtp`.
@@ -205,6 +214,7 @@ export interface EnvVars {
   TRUST_PROXY: number;
   THROTTLE_LIMIT: number;
   THROTTLE_TTL_MS: number;
+  THROTTLE_SCALE: number;
   PUBLIC_WEB_URL: string;
   GOOGLE_CLIENT_ID: string;
   ALLOWED_EMAIL_DOMAIN: string;

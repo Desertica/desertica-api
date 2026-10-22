@@ -26,6 +26,7 @@ describe('envSchema', () => {
     expect(error?.message).toMatch(/TURNSTILE_SECRET_KEY/);
     expect(error?.message).toMatch(/PUBLIC_WEB_URL/);
     expect(error?.message).toMatch(/TRUST_PROXY/);
+    expect(error?.message).toMatch(/STAFF_NOTIFY_EMAIL/);
   });
 
   it('accepts a complete production config', () => {
@@ -35,6 +36,7 @@ describe('envSchema', () => {
       CORS_ORIGINS: 'https://desertica.pe',
       JWT_ACCESS_SECRET: 'x'.repeat(40),
       TRUST_PROXY: 2,
+      STAFF_NOTIFY_EMAIL: 'ops@desertica.pe',
       TURNSTILE_SECRET_KEY: 'ts',
       GOOGLE_CLIENT_ID: 'gid',
       PUBLIC_WEB_URL: 'https://desertica.pe',
@@ -76,6 +78,7 @@ describe('envSchema', () => {
         CORS_ORIGINS: 'https://desertica.pe',
         JWT_ACCESS_SECRET: 'x'.repeat(40),
         TRUST_PROXY: 2,
+        STAFF_NOTIFY_EMAIL: 'ops@desertica.pe',
         TURNSTILE_SECRET_KEY: 'ts',
         GOOGLE_CLIENT_ID: 'gid',
         PUBLIC_WEB_URL: 'https://desertica.pe',
@@ -121,6 +124,17 @@ describe('envSchema', () => {
       { abortEarly: false },
     );
     expect(error?.message).toMatch(/AUTH_ALLOW_FAKE_GOOGLE/);
+  });
+
+  it('accepts THROTTLE_SCALE only with NODE_ENV=test', () => {
+    expect(envSchema.validate(base).error).toBeUndefined();
+    expect(
+      envSchema.validate({ ...base, THROTTLE_SCALE: 1000 }).error?.message,
+    ).toMatch(/THROTTLE_SCALE/);
+    expect(
+      envSchema.validate({ ...base, NODE_ENV: 'test', THROTTLE_SCALE: 1000 })
+        .error,
+    ).toBeUndefined();
   });
 
   it('rejects a non-postgres database URL', () => {
