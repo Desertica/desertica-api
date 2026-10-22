@@ -30,8 +30,8 @@ Ramas que existen y se protegen: `main`, `staging` y `develop`. (`deploy` y las 
 
 ## El check `audit`
 
-`audit` (`npm audit --omit=dev --audit-level=high`) hoy **falla**: hay 6 vulnerabilidades altas y 1 crítica en dependencias de producción (p. ej. `proxy-addr`). No lo añadas como obligatorio hasta resolverlas (`npm audit fix`, revisando que nada se rompa); mientras tanto sale en rojo en cada PR, a propósito. Cuando esté en verde, añádelo a la lista de checks de las tres ramas.
+`audit` (`npm audit --omit=dev --audit-level=high`) hoy **falla**: hay 6 vulnerabilidades altas y 1 crítica en dependencias de producción. En una prueba local, `npm audit fix` (sin `--force`) las resolvió, dejando solo 2 moderadas, con lint, pruebas, build y e2e en verde. Aplícalo en un PR aparte (`npm audit fix` y commit de `package-lock.json`). Hasta entonces no lo marques como obligatorio; cuando esté en verde, añádelo a la lista de checks de las tres ramas.
 
 ## Comprobar que funciona
 
-Abre un PR hacia `develop`: el botón **Merge** debe quedar bloqueado hasta que `test`, `openapi`, `secrets` y `codeql` estén en verde y haya 1 aprobación. Un push directo a `develop` debe ser rechazado.
+El CI corre en cada push a cualquier rama y en cada PR, sea cual sea su base. Abre un PR hacia `develop`: el botón **Merge** debe quedar bloqueado hasta que `test`, `openapi`, `secrets` y `codeql` estén en verde y haya 1 aprobación. Un push directo a `develop` debe ser rechazado.
