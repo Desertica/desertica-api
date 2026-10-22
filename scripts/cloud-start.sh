@@ -63,7 +63,7 @@ if [ -f prisma/schema.prisma ]; then
   npx prisma migrate deploy
 fi
 
-if curl -sf "http://127.0.0.1:${PORT:-3000}/health" >/dev/null 2>&1; then
+if curl -sf "http://127.0.0.1:${PORT:-3000}/api/health" >/dev/null 2>&1; then
   echo "NestJS already listening on :${PORT:-3000}"
   exit 0
 fi
@@ -76,7 +76,7 @@ fi
 nohup npm run start:dev >/tmp/desertica-api.log 2>&1 &
 
 for _ in $(seq 1 60); do
-  if curl -sf "http://127.0.0.1:${PORT:-3000}/health" >/dev/null 2>&1; then
+  if curl -sf "http://127.0.0.1:${PORT:-3000}/api/health" >/dev/null 2>&1; then
     echo "NestJS is ready on :${PORT:-3000}"
     exit 0
   fi

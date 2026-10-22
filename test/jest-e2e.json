@@ -9,5 +9,7 @@
   },
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
-  }
+  },
+  "setupFilesAfterEnv": ["<rootDir>/conformance.setup.ts"],
+  "maxWorkers": 1
 }
