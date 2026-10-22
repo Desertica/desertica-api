@@ -28,6 +28,13 @@ export interface IssuedSession {
   refreshMaxAgeSeconds: number;
 }
 
+/** Dos refresh simultáneos con el mismo token: el perdedor no es un robo, así que la cookie no se borra. */
+export class RefreshRaceException extends UnauthorizedException {
+  constructor() {
+    super('Invalid refresh token');
+  }
+}
+
 export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
@@ -93,6 +100,12 @@ export class AuthService {
     if (!stored) throw invalid;
 
     if (stored.revokedAt) {
+      const graceMs =
+        this.config.get('REFRESH_REUSE_GRACE_SECONDS', { infer: true }) * 1000;
+      // Rotado hace instantes: otra pestaña lo usó a la vez; no es robo.
+      if (Date.now() - stored.revokedAt.getTime() < graceMs) {
+        throw new RefreshRaceException();
+      }
       // Reuso de un token ya rotado: se asume robo y se cierran todas las sesiones.
       await this.prisma.refreshToken.updateMany({
         where: { userId: stored.userId, revokedAt: null },
@@ -114,7 +127,7 @@ export class AuthService {
       where: { id: stored.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
-    if (claimed.count !== 1) throw invalid;
+    if (claimed.count !== 1) throw new RefreshRaceException();
 
     return this.issueSession(stored.user);
   }

@@ -15,7 +15,12 @@ import type { Request, Response } from 'express';
 import { parseOrigins } from '../../common/configure-app';
 import { rateLimit } from '../../common/throttle';
 import { EnvVars } from '../../config/env.validation';
-import { AuthService, IssuedSession, Session } from './auth.service';
+import {
+  AuthService,
+  IssuedSession,
+  RefreshRaceException,
+  Session,
+} from './auth.service';
 import type { AuthUser } from './auth.types';
 import { CurrentUser, Public } from './decorators';
 import { GoogleLoginDto } from './dto/auth.dto';
@@ -94,8 +99,11 @@ export class AuthController {
     try {
       return this.withCookie(res, await this.auth.refresh(token, req.ip));
     } catch (error) {
-      // Un refresh inválido no deja una cookie inútil en el navegador.
-      clearRefreshCookie(res, this.secure);
+      // Un refresh inválido no deja una cookie inútil en el navegador; si perdió una
+      // carrera, la cookie ya es la del token nuevo y se conserva.
+      if (!(error instanceof RefreshRaceException)) {
+        clearRefreshCookie(res, this.secure);
+      }
       throw error;
     }
   }

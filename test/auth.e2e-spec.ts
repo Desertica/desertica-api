@@ -165,6 +165,11 @@ describe('Auth y permisos (e2e)', () => {
         .set(refreshCookie(session.refreshToken))
         .expect(200);
       const second = refreshTokenFrom(first);
+      // Pasada la ventana de gracia, reusar el token rotado es un robo.
+      await prisma.refreshToken.updateMany({
+        where: { userId: session.user.id, revokedAt: { not: null } },
+        data: { revokedAt: new Date(Date.now() - 60_000) },
+      });
 
       await http()
         .post('/api/auth/refresh')
@@ -177,7 +182,7 @@ describe('Auth y permisos (e2e)', () => {
         .expect(401);
     });
 
-    it('lets only one of two simultaneous refreshes win', async () => {
+    it('lets only one of two simultaneous refreshes win without logging the user out', async () => {
       const session = await loginAs(app, 'operator');
       const results = await Promise.all(
         [1, 2, 3].map(() =>
@@ -186,7 +191,16 @@ describe('Auth y permisos (e2e)', () => {
             .set(refreshCookie(session.refreshToken)),
         ),
       );
-      expect(results.filter((r) => r.status === 200)).toHaveLength(1);
+      const won = results.filter((r) => r.status === 200);
+      expect(won).toHaveLength(1);
+      // Los perdedores no borran la cookie ni revocan la familia: el token ganador sigue valiendo.
+      for (const lost of results.filter((r) => r.status === 401)) {
+        expect(lost.headers['set-cookie']).toBeUndefined();
+      }
+      await http()
+        .post('/api/auth/refresh')
+        .set(refreshCookie(refreshTokenFrom(won[0])))
+        .expect(200);
     });
 
     it('revokes on logout and rejects unknown or expired tokens', async () => {
