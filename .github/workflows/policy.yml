@@ -1,0 +1,55 @@
+name: Policy
+
+on:
+  pull_request:
+    branches: [develop, staging, prod]
+
+permissions:
+  contents: read
+
+jobs:
+  flow:
+    name: flow
+    runs-on: ubuntu-latest
+    steps:
+      - name: Promotion order is develop -> staging -> prod
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          case "$BASE" in
+            staging) want=develop ;;
+            prod) want=staging ;;
+            *) exit 0 ;;
+          esac
+          [ "$HEAD" = "$want" ] || { echo "::error::PRs into $BASE must come from $want, not $HEAD"; exit 1; }
+
+  commits:
+    name: commits
+    # promotions carry commits that were already checked when they entered develop
+    if: github.base_ref == 'develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: No attribution trailers and no bot authors
+        env:
+          RANGE: origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}
+        run: |
+          if git log --format=%B "$RANGE" | grep -i -E '^(co-authored-by|claude-session):|generated with \[claude'; then
+            echo "::error::Remove Co-Authored-By / Claude trailers from commit messages"; exit 1
+          fi
+          if git log --format='%ae %ce' "$RANGE" | grep -i 'anthropic.com'; then
+            echo "::error::Commits must be authored by a person"; exit 1
+          fi
+
+  tracked-files:
+    name: tracked-files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No .env, editor folders, certificates or OS junk in git
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)(\.env|\.env\.[A-Za-z0-9_-]+|\.DS_Store)$|(^|/)(\.cursor|\.vscode|\.idea|node_modules)/|\.(pfx|p12)$' | grep -vE '(^|/)\.env\.example$' || true)
+          if [ -n "$bad" ]; then echo "::error::Files that must not be versioned:"; echo "$bad"; exit 1; fi
