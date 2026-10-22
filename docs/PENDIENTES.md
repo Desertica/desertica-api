@@ -23,6 +23,10 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 - [ ] Meta Business y Pixel; en v2, WhatsApp Business API (aprobación de plantillas).
 - [ ] Cuentas de GA4, GTM y Search Console; Google Workspace (calendario, login de staff, correo).
 
+## Enlaces a la web en correos
+
+- [ ] El API aún no genera ningún enlace a la web (no hay correos ni `WEB_URL`). Cuando existan (acceso a "mi reserva", enlaces de pago, renuncia, comprobantes, reclamos), constrúyelos con `webUrl()` de `src/common/web-links.ts` y el `locale` de la reserva o el cliente. Rutas reales de la web: `/{locale}/booking/:reference?token=`, `/{locale}/pay/:token`, `/{locale}/waiver/:token`, `/{locale}/checkout/payment/:reference`, `/{locale}/complaints`. Los tres primeros solo existen con `BOOKING_ENGINE_ENABLED`. La web no tiene ruta de comprobantes: el PDF sería un enlace del API.
+
 ## Negocio y contenido
 
 - [ ] Precios finales por moneda (USD y PEN, con IGV incluido), capacidades, horarios y puntos de encuentro por tour.
