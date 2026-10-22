@@ -349,7 +349,7 @@ describe('Pagos por pasarela (e2e)', () => {
       expect(event?.processedAt).not.toBeNull();
     });
 
-    it('ignores events for payments that are not ours', async () => {
+    it('rejects events for unknown payments so the gateway retries them, leaving them unprocessed', async () => {
       const eventId = `evt_unk_${rand()}${rand()}`;
       await succeeded(
         'stripe',
@@ -361,11 +361,12 @@ describe('Pagos por pasarela (e2e)', () => {
         },
         eventId,
         { metadata: {} },
-      ).expect(200);
+      ).expect(409);
       const row = await prisma.webhookEvent.findFirstOrThrow({
         where: { provider: 'STRIPE', eventId },
       });
-      expect(row.error).toBe('unknown_payment');
+      expect(row.processedAt).toBeNull();
+      expect(row.error).toBe('Unknown payment');
     });
   });
 
