@@ -340,9 +340,9 @@ describe('Reservas (e2e)', () => {
         (m) => m.to === row.customerId || (m.data as Body).reference === ref,
       );
       expect(mail?.template).toBe('booking_created');
-      expect(String((mail!.data as Body).bookingUrl)).toContain(
-        body.accessToken,
-      );
+      const bookingUrl = String((mail!.data as Body).bookingUrl);
+      expect(bookingUrl).toContain(body.accessToken);
+      expect(bookingUrl).toContain(`/en/booking/${ref}?token=`);
     });
 
     it('keeps the price chosen at booking time even if rules change later', async () => {

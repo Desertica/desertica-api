@@ -680,10 +680,15 @@ export class BookingCreationService {
           currency: booking.currency,
           totalCents: booking.totalCents,
           pendingCents: bookingPending(booking),
-          bookingUrl: links.booking(base, booking.reference, token),
+          bookingUrl: links.booking(
+            base,
+            booking.locale,
+            booking.reference,
+            token,
+          ),
           waiverUrls: booking.waivers
             .filter((w) => w.status === 'PENDING')
-            .map((w) => links.waiver(base, w.token)),
+            .map((w) => links.waiver(base, booking.locale, w.token)),
         },
       },
       { bookingId },
