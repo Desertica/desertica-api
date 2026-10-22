@@ -314,6 +314,7 @@ export class BookingPaymentsService {
 
     const url = links.payment(
       this.config.get('PUBLIC_WEB_URL', { infer: true }),
+      booking.locale,
       link.token,
     );
     await this.notifications.sendEmail(

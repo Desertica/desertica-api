@@ -16,6 +16,14 @@ export const envSchema = Joi.object({
   DATABASE_URL: Joi.string()
     .uri({ scheme: ['postgres', 'postgresql'] })
     .required(),
+  /** Pool de conexiones a Postgres (por instancia). */
+  DB_POOL_MAX: Joi.number().integer().min(1).max(200).default(20),
+  /** Espera máxima por una conexión del pool; vencida, la petición responde 503. */
+  DB_CONNECTION_TIMEOUT_MS: Joi.number().integer().min(100).default(5000),
+  /** Tope de una sentencia SQL (statement_timeout). */
+  DB_STATEMENT_TIMEOUT_MS: Joi.number().integer().min(1000).default(30_000),
+  /** Cierra la sesión que deja una transacción abierta sin actividad (idle_in_transaction_session_timeout). */
+  DB_IDLE_IN_TX_TIMEOUT_MS: Joi.number().integer().min(1000).default(30_000),
   /** Opcional. Sin Redis se usan almacenes en memoria (solo válidos con una instancia). */
   REDIS_URL: Joi.string()
     .uri({ scheme: ['redis', 'rediss'] })
@@ -29,11 +37,24 @@ export const envSchema = Joi.object({
       .allow('')
       .default('http://localhost:4200,http://localhost:4300'),
   }),
-  /** Saltos de proxy confiables para resolver la IP real (0 = ninguno). */
-  TRUST_PROXY: Joi.number().integer().min(0).max(10).default(0),
+  /**
+   * Saltos de proxy confiables para resolver la IP real (0 = ninguno). En producción es explícito:
+   * con el valor por defecto todos los clientes compartirían la IP del proxy y el rate limit.
+   */
+  TRUST_PROXY: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .default(0)
+    .when('NODE_ENV', { is: 'production', then: Joi.required() }),
   /** Límite global por IP: peticiones por ventana. */
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(120),
   THROTTLE_TTL_MS: Joi.number().integer().min(1000).default(60_000),
+  /** Multiplica los límites por IP. Solo las pruebas e2e lo suben; fuera de `test` debe ser 1. */
+  THROTTLE_SCALE: Joi.number()
+    .min(1)
+    .default(1)
+    .when('NODE_ENV', { not: 'test', then: Joi.valid(1) }),
 
   /** Base pública de los enlaces que se envían por correo (web del cliente). */
   PUBLIC_WEB_URL: Joi.string()
@@ -62,6 +83,8 @@ export const envSchema = Joi.object({
     }),
   JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(60).default(900),
   REFRESH_TTL_DAYS: Joi.number().integer().min(1).default(30),
+  /** Segundos en que reusar un refresh token recién rotado (dos pestañas a la vez) no se toma por robo. */
+  REFRESH_REUSE_GRACE_SECONDS: Joi.number().integer().min(0).default(20),
   /** Atributo `Secure` de la cookie del refresh token. Solo se puede apagar fuera de producción (HTTP local). */
   REFRESH_COOKIE_SECURE: Joi.boolean()
     .default(true)
@@ -77,8 +100,12 @@ export const envSchema = Joi.object({
     then: Joi.required(),
     otherwise: Joi.string().allow('').default(''),
   }),
-  /** Destino de los avisos internos (contacto, reclamos). Opcional. */
-  STAFF_NOTIFY_EMAIL: Joi.string().email().allow('').default(''),
+  /** Destino de los avisos internos (contacto, reclamos, alertas de cobros). Obligatorio en producción. */
+  STAFF_NOTIFY_EMAIL: Joi.string().when('NODE_ENV', {
+    is: 'production',
+    then: Joi.string().email().required(),
+    otherwise: Joi.string().email().allow('').default(''),
+  }),
   /**
    * Correo saliente. `log` solo escribe en el log (desarrollo y pruebas; muestra los enlaces con
    * tokens); producción exige `smtp`.
@@ -178,17 +205,23 @@ export interface EnvVars {
   PORT: number;
   LOG_LEVEL: string;
   DATABASE_URL: string;
+  DB_POOL_MAX: number;
+  DB_CONNECTION_TIMEOUT_MS: number;
+  DB_STATEMENT_TIMEOUT_MS: number;
+  DB_IDLE_IN_TX_TIMEOUT_MS: number;
   REDIS_URL?: string;
   CORS_ORIGINS: string;
   TRUST_PROXY: number;
   THROTTLE_LIMIT: number;
   THROTTLE_TTL_MS: number;
+  THROTTLE_SCALE: number;
   PUBLIC_WEB_URL: string;
   GOOGLE_CLIENT_ID: string;
   ALLOWED_EMAIL_DOMAIN: string;
   JWT_ACCESS_SECRET: string;
   JWT_ACCESS_TTL_SECONDS: number;
   REFRESH_TTL_DAYS: number;
+  REFRESH_REUSE_GRACE_SECONDS: number;
   REFRESH_COOKIE_SECURE: boolean;
   AUTH_ALLOW_FAKE_GOOGLE: boolean;
   TURNSTILE_SECRET_KEY: string;

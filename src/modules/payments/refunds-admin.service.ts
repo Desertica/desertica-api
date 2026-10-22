@@ -259,25 +259,28 @@ export class RefundsService {
     gw: GatewayRefund,
     fx: Effects,
   ): Promise<void> {
-    let refund = await tx.refund.findFirst({
-      where: { providerRef: gw.providerRef, payment: { provider } },
-      include: { payment: true },
-    });
-    const payment = refund
-      ? refund.payment
-      : await tx.payment.findUnique({
-          where: {
-            provider_providerRef: {
-              provider,
-              providerRef: gw.paymentProviderRef,
-            },
+    const byRef = () =>
+      tx.refund.findFirst({
+        where: { providerRef: gw.providerRef, payment: { provider } },
+        include: { payment: true },
+      });
+    const payment =
+      (await byRef())?.payment ??
+      (await tx.payment.findUnique({
+        where: {
+          provider_providerRef: {
+            provider,
+            providerRef: gw.paymentProviderRef,
           },
-        });
+        },
+      }));
     if (!payment) {
       fx.error = 'unknown_payment';
       return;
     }
     await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${payment.bookingId} FOR UPDATE`;
+    // Recién con la reserva bloqueada: un evento simultáneo pudo crear o cerrar el reembolso.
+    let refund = await byRef();
     const settled = await tx.payment.findUniqueOrThrow({
       where: { id: payment.id },
     });

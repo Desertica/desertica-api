@@ -8,7 +8,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
-import { AllExceptionsFilter } from './all-exceptions.filter';
+import {
+  AllExceptionsFilter,
+  DatabaseBusyException,
+} from './all-exceptions.filter';
 
 /** Traduce errores conocidos de Prisma a HTTP y delega el formato. */
 @Catch(Prisma.PrismaClientKnownRequestError)
@@ -33,6 +36,10 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     }
     if (exception.code === 'P2025') {
       return new NotFoundException('Record not found');
+    }
+    // P2024: pool agotado; P2028: transacción vencida o cerrada; P2034: conflicto de escritura o abrazo mortal.
+    if (['P2024', 'P2028', 'P2034'].includes(exception.code)) {
+      return new DatabaseBusyException();
     }
     return new InternalServerErrorException('Database request failed');
   }
