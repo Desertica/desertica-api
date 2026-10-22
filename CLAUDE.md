@@ -30,7 +30,8 @@ Usa **Node 22**.
 - **Cupos**: crear un bloqueo (`Hold`) y una reserva descuenta cupo dentro de una transacción; dos peticiones simultáneas sobre el último cupo no pueden ganar las dos.
 - **Auditoría**: los cambios de estado y los movimientos de dinero escriben en `AuditLog` (solo inserción).
 - Zona horaria de negocio `America/Lima`; en base de datos todo en UTC.
-- `Tour` en `prisma/schema.prisma` y `src/modules/tours` son obsoletos y se eliminan cuando exista el catálogo sobre `TourRef`. No agregues usos nuevos.
+- El catálogo vive sobre `TourRef` (sincronizado desde el CMS). El modelo `Tour` obsoleto ya no existe.
+- Todo endpoint exige sesión del staff salvo los marcados `@Public()`; usa `@RequirePermission()` con la cadena de `x-permission`. Cada respuesta de las pruebas e2e se valida contra `openapi/openapi.yaml`: un estado o una forma no documentados rompen la prueba.
 - Nunca commitees `.env`.
 
 ## Pitfalls

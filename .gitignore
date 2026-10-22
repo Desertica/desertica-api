@@ -44,3 +44,6 @@ lerna-debug.log*
 # temp
 /tmp
 .turbo
+
+# Archivos de comprobantes (XML, CDR, PDF): nunca en Git
+/storage/

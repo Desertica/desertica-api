@@ -4,19 +4,19 @@ import {
   ConflictException,
   ExceptionFilter,
   HttpException,
+  InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { Response } from 'express';
 import { Prisma } from '../../generated/prisma/client';
+import { AllExceptionsFilter } from './all-exceptions.filter';
 
+/** Traduce errores conocidos de Prisma a HTTP y delega el formato. */
 @Catch(Prisma.PrismaClientKnownRequestError)
 export class PrismaExceptionFilter implements ExceptionFilter {
-  catch(exception: Prisma.PrismaClientKnownRequestError, host: ArgumentsHost) {
-    const httpException = this.toHttpException(exception);
-    const response = host.switchToHttp().getResponse<Response>();
-    const status = httpException.getStatus();
+  private readonly delegate = new AllExceptionsFilter();
 
-    response.status(status).json(httpException.getResponse());
+  catch(exception: Prisma.PrismaClientKnownRequestError, host: ArgumentsHost) {
+    this.delegate.catch(this.toHttpException(exception), host);
   }
 
   private toHttpException(
@@ -31,11 +31,9 @@ export class PrismaExceptionFilter implements ExceptionFilter {
           : 'field';
       return new ConflictException(`Unique constraint failed on ${target}`);
     }
-
     if (exception.code === 'P2025') {
       return new NotFoundException('Record not found');
     }
-
-    return new HttpException('Database request failed', 500);
+    return new InternalServerErrorException('Database request failed');
   }
 }
