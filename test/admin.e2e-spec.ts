@@ -692,7 +692,7 @@ describe('Administración (e2e)', () => {
           bookingId: b.id,
           paymentId: payment.id,
           seriesId: series.id,
-          number: Math.floor(Math.random() * 1_000_000_000),
+          number: 9_000_000 + Math.floor(Math.random() * 990_000_000),
           docType: 'BOLETA',
           currency: 'USD',
           totalCents: 20000,
