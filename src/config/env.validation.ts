@@ -37,8 +37,16 @@ export const envSchema = Joi.object({
       .allow('')
       .default('http://localhost:4200,http://localhost:4300'),
   }),
-  /** Saltos de proxy confiables para resolver la IP real (0 = ninguno). */
-  TRUST_PROXY: Joi.number().integer().min(0).max(10).default(0),
+  /**
+   * Saltos de proxy confiables para resolver la IP real (0 = ninguno). En producción es explícito:
+   * con el valor por defecto todos los clientes compartirían la IP del proxy y el rate limit.
+   */
+  TRUST_PROXY: Joi.number()
+    .integer()
+    .min(0)
+    .max(10)
+    .default(0)
+    .when('NODE_ENV', { is: 'production', then: Joi.required() }),
   /** Límite global por IP: peticiones por ventana. */
   THROTTLE_LIMIT: Joi.number().integer().min(1).default(120),
   THROTTLE_TTL_MS: Joi.number().integer().min(1000).default(60_000),

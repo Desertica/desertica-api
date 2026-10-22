@@ -25,6 +25,7 @@ describe('envSchema', () => {
     expect(error?.message).toMatch(/JWT_ACCESS_SECRET/);
     expect(error?.message).toMatch(/TURNSTILE_SECRET_KEY/);
     expect(error?.message).toMatch(/PUBLIC_WEB_URL/);
+    expect(error?.message).toMatch(/TRUST_PROXY/);
   });
 
   it('accepts a complete production config', () => {
@@ -33,6 +34,7 @@ describe('envSchema', () => {
       NODE_ENV: 'production',
       CORS_ORIGINS: 'https://desertica.pe',
       JWT_ACCESS_SECRET: 'x'.repeat(40),
+      TRUST_PROXY: 2,
       TURNSTILE_SECRET_KEY: 'ts',
       GOOGLE_CLIENT_ID: 'gid',
       PUBLIC_WEB_URL: 'https://desertica.pe',
@@ -73,6 +75,7 @@ describe('envSchema', () => {
         NODE_ENV: 'production',
         CORS_ORIGINS: 'https://desertica.pe',
         JWT_ACCESS_SECRET: 'x'.repeat(40),
+        TRUST_PROXY: 2,
         TURNSTILE_SECRET_KEY: 'ts',
         GOOGLE_CLIENT_ID: 'gid',
         PUBLIC_WEB_URL: 'https://desertica.pe',
