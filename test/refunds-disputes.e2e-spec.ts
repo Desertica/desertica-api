@@ -446,6 +446,24 @@ describe('Reembolsos y disputas (e2e)', () => {
       expect(alertsFor(b.id, 'refund_external')).toBe(1);
     });
 
+    it('counts an external refund once when two events for it arrive at the same time', async () => {
+      const b = await makeBooking(app, fx);
+      const p = await recordPaid(app, b);
+      const ref = `re_ext_${rand()}`;
+      await Promise.all(
+        [1, 2, 3].map(() =>
+          postWebhook(
+            app,
+            'stripe',
+            refundEvent(p, 'SUCCEEDED', ref, 7000),
+          ).expect(200),
+        ),
+      );
+      expect(await prisma.refund.count({ where: { paymentId: p.id } })).toBe(1);
+      expect((await payment(p.id)).refundedCents).toBe(7000);
+      expect((await booking(b.id)).refundedCents).toBe(7000);
+    });
+
     it('closes a refund that was pending at the gateway and ignores stale events', async () => {
       const pendingRef = `re_p_${rand()}${rand()}`;
       const b = await makeBooking(app, fx);
