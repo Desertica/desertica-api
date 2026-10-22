@@ -39,3 +39,7 @@ Usa **Node 22**.
 - `prisma generate` corre en `postinstall`; el cliente generado (`src/generated/prisma`) no se versiona.
 - Los endpoints públicos (`/public/*`) son anónimos: validan con DTOs estrictos, limitan por IP y por correo y aceptan `Idempotency-Key` donde crean reservas o pagos.
 - El rate limit en memoria no sirve con varias instancias; usa Redis.
+
+## Ramas
+
+`main` es solo la base; el trabajo entra por PR a `develop`, `develop` -> `staging` (pruebas) y `staging` -> `prod` (producción). Rama de trabajo: `feat/*`, `fix/*` o `chore/*`, se borra al mezclar. Los checks y la protección están en `docs/PROTECCION-RAMAS.md`; los workflows son `.github/workflows/{ci,security,policy}.yml` y los editas con un PR normal.
