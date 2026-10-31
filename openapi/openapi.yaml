@@ -566,7 +566,7 @@ paths:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
         '409':
-          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara). No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
+          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara) o de un pago que aún no existe aquí. No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

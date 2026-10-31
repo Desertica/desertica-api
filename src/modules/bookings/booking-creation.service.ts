@@ -185,9 +185,13 @@ export class BookingCreationService {
           departure,
           dto.currency,
           people,
+          tx,
         );
         const price = priceBooking(rule, dto.adults, children);
-        const depositPercent = await this.settings.getNumber('depositPercent');
+        const depositPercent = await this.settings.getNumber(
+          'depositPercent',
+          tx,
+        );
         const depositCents =
           dto.paymentKind === 'DEPOSIT'
             ? computeDeposit(price.totalCents, depositPercent)
@@ -436,6 +440,7 @@ export class BookingCreationService {
             departure,
             dto.currency,
             people,
+            tx,
           );
           const price = priceBooking(found.rule, dto.adults, children);
           listTotal = price.totalCents;
@@ -675,10 +680,15 @@ export class BookingCreationService {
           currency: booking.currency,
           totalCents: booking.totalCents,
           pendingCents: bookingPending(booking),
-          bookingUrl: links.booking(base, booking.reference, token),
+          bookingUrl: links.booking(
+            base,
+            booking.locale,
+            booking.reference,
+            token,
+          ),
           waiverUrls: booking.waivers
             .filter((w) => w.status === 'PENDING')
-            .map((w) => links.waiver(base, w.token)),
+            .map((w) => links.waiver(base, booking.locale, w.token)),
         },
       },
       { bookingId },

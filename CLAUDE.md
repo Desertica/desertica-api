@@ -23,12 +23,12 @@ Usa **Node 22**.
 - **Contrato primero.** Un cambio de comportamiento o de forma empieza en `openapi/openapi.yaml` (o `openapi/billing.yaml`) y se implementa después. El `operationId` es el nombre del método del cliente generado: no se renombra uno existente sin avisar a web y backoffice.
 - **Clientes del contrato**: no se publica un paquete. `desertica-web` y `desertica-backoffice` generan sus tipos con `openapi-typescript` (y llaman con `openapi-fetch`) a partir de `openapi/openapi.yaml` de este repo, clonado al lado (`../desertica-api`), y commitean el resultado. `desertica-billing` implementa `openapi/billing.yaml`. Verificado: ambos archivos generan TypeScript válido con `openapi-typescript@7`.
 - **Dinero**: enteros en la unidad menor (`*Cents`), siempre con IGV incluido. El precio es único para todos los clientes; no hay precio ni exoneración por nacionalidad. Monedas `USD` y `PEN`. Stripe cobra solo USD; Culqi cobra USD o PEN.
-- **Fuentes de verdad**: el contenido editorial vive en el CMS y aquí solo hay `TourRef` (slug y ajustes operativos); dinero, cupos, reservas y comprobantes viven aquí. No dupliques títulos ni textos de tours.
+- **Fuentes de verdad**: el contenido editorial vive en el CMS y aquí solo hay `TourRef` (slug y ajustes operativos); dinero, cupos, reservas y comprobantes viven aquí. `TourRef.title` es solo un snapshot (en) para listados del backoffice que se refresca al sincronizar; no dupliques otros textos de tours.
 - **Series y correlativos** (`Series.nextNumber`) son del API. `desertica-billing` recibe serie y número ya asignados.
 - **Secretos fiscales**: el certificado digital y la clave SOL no existen en este repo ni en este API; viven solo en `desertica-billing`.
 - **Pagos**: el estado de un pago lo fija el webhook de la pasarela, nunca el navegador. Los webhooks se validan por firma y se guardan en `WebhookEvent` (idempotentes por `provider` y `eventId`). Todo lo que mueve dinero detrás de la interfaz `PaymentProvider` (adaptadores `stripe` y `culqi`). Nunca se maneja el número de tarjeta.
 - **Cupos**: crear un bloqueo (`Hold`) y una reserva descuenta cupo dentro de una transacción; dos peticiones simultáneas sobre el último cupo no pueden ganar las dos.
-- **Auditoría**: los cambios de estado y los movimientos de dinero escriben en `AuditLog` (solo inserción).
+- **Auditoría**: los cambios de estado y los movimientos de dinero escriben en `AuditLog` (solo inserción). No cubre la firma del descargo ni la creación o liberación de un `Hold`.
 - Zona horaria de negocio `America/Lima`; en base de datos todo en UTC.
 - El catálogo vive sobre `TourRef` (sincronizado desde el CMS). El modelo `Tour` obsoleto ya no existe.
 - Todo endpoint exige sesión del staff salvo los marcados `@Public()`; usa `@RequirePermission()` con la cadena de `x-permission`. Cada respuesta de las pruebas e2e se valida contra `openapi/openapi.yaml`: un estado o una forma no documentados rompen la prueba.
@@ -37,8 +37,10 @@ Usa **Node 22**.
 ## Pitfalls
 
 - `prisma generate` corre en `postinstall`; el cliente generado (`src/generated/prisma`) no se versiona.
-- Los endpoints públicos (`/public/*`) son anónimos: validan con DTOs estrictos, limitan por IP y por correo y aceptan `Idempotency-Key` donde crean reservas o pagos.
+- Los endpoints públicos (`/public/*`) son anónimos: validan con DTOs estrictos, limitan por IP (el límite por correo solo existe en "mi reserva" y en reclamos) y aceptan `Idempotency-Key` donde crean reservas o pagos.
 - El rate limit en memoria no sirve con varias instancias; usa Redis.
+- Dentro de `$transaction` usa solo `tx` (también al leer ajustes, precios o el tipo de cambio) y no llames a la red: el pool es corto y se agota.
+- En producción `TRUST_PROXY`, `TURNSTILE_SECRET_KEY` y `STAFF_NOTIFY_EMAIL` son obligatorias: sin ellas la API no arranca.
 
 ## Ramas
 

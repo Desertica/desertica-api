@@ -486,6 +486,7 @@ export class BookingLifecycleService {
           target,
           booking.currency,
           people,
+          tx,
         );
         const price = priceBooking(rule, booking.adults, booking.children);
         newTotal = price.totalCents;

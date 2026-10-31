@@ -145,8 +145,11 @@ export class StripeGateway implements PaymentGateway {
       case 'payment_intent.canceled':
       case 'payment_intent.requires_action': {
         const intent = event.data.object;
+        // Un cobro de la misma cuenta de Stripe que no es de una reserva nuestra: no es un error ni se reintenta.
+        if (!intent.metadata?.paymentId || !this.currencyOf(intent.currency)) {
+          return { kind: 'ignored', ...base };
+        }
         const payment = this.fromIntent(intent);
-        if (!payment) return { kind: 'ignored', ...base };
         if (event.type === 'payment_intent.payment_failed') {
           payment.status = 'FAILED';
         }

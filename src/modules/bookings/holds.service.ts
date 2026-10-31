@@ -52,7 +52,6 @@ export class HoldsService {
         );
       }
     }
-    const minutes = await this.settings.getNumber('holdMinutes');
     return this.prisma.$transaction(async (tx) => {
       if (!(await this.seats.lockDeparture(tx, departureId))) {
         throw new NotFoundException('Departure not found');
@@ -87,7 +86,10 @@ export class HoldsService {
         });
       }
       // Tope de bloqueos vigentes por salida: cuenta dentro del candado, así que no se sobrepasa.
-      const cap = await this.settings.getNumber('maxActiveHoldsPerDeparture');
+      const cap = await this.settings.getNumber(
+        'maxActiveHoldsPerDeparture',
+        tx,
+      );
       const active = await tx.hold.findMany({
         where: {
           departureId,
@@ -111,6 +113,7 @@ export class HoldsService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       }
+      const minutes = await this.settings.getNumber('holdMinutes', tx);
       const hold = await tx.hold.create({
         data: {
           token: generateToken(24),

@@ -40,8 +40,12 @@ export class SettingsService {
     return result as Settings & Record<string, unknown>;
   }
 
-  async getNumber(key: SettingKey): Promise<number> {
-    const row = await this.prisma.setting.findUnique({ where: { key } });
+  /** Dentro de una transacción pasa su `tx`: pedir otra conexión al pool desde ahí lo agota. */
+  async getNumber(
+    key: SettingKey,
+    db: Prisma.TransactionClient = this.prisma,
+  ): Promise<number> {
+    const row = await db.setting.findUnique({ where: { key } });
     return typeof row?.value === 'number'
       ? row.value
       : SETTING_DEFINITIONS[key].default;

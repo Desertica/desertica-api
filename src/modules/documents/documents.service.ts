@@ -174,7 +174,7 @@ export class DocumentsService {
     const issueDate = limaDate(now);
     const fx =
       p.booking.currency === 'USD'
-        ? await this.exchange.rateFor(issueDate)
+        ? await this.exchange.rateFor(issueDate, tx)
         : null;
     const customer = {
       idDocType: billing.idDocType,

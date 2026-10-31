@@ -64,7 +64,12 @@ export class PublicAccessService {
         locale: booking.locale,
         data: {
           reference: booking.reference,
-          bookingUrl: links.booking(base, booking.reference, token),
+          bookingUrl: links.booking(
+            base,
+            booking.locale,
+            booking.reference,
+            token,
+          ),
         },
       },
       { bookingId: booking.id },

@@ -44,6 +44,7 @@
     "@prisma/client": "^7.4.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
+    "dotenv": "^17.2.1",
     "google-auth-library": "^11.1.0",
     "helmet": "^8.3.0",
     "ioredis": "^6.0.0",
@@ -52,9 +53,11 @@
     "nodemailer": "^10.0.14",
     "pino": "^10.4.0",
     "pino-http": "^11.0.0",
+    "prisma": "^7.4.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "stripe": "^23.0.0"
+    "stripe": "^23.0.0",
+    "tsx": "^4.20.3"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -70,7 +73,6 @@
     "@types/supertest": "^7.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "dotenv": "^17.2.1",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
@@ -78,7 +80,6 @@
     "jest": "^30.0.0",
     "pino-pretty": "^13.2.0",
     "prettier": "^3.4.2",
-    "prisma": "^7.4.0",
     "smtp-server": "^3.19.17",
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
@@ -86,7 +87,6 @@
     "ts-loader": "^9.5.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "tsx": "^4.20.3",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0",
     "yaml": "^2.9.1"

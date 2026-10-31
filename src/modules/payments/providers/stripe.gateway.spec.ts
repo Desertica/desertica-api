@@ -168,6 +168,19 @@ describe('StripeGateway webhooks', () => {
     });
   });
 
+  it.each([
+    ['an unsupported currency', { currency: 'eur' }],
+    ['no paymentId in its metadata', { metadata: {} }],
+  ])('ignores a PaymentIntent with %s instead of failing', async (_n, over) => {
+    const { body, headers } = signed(
+      event('payment_intent.succeeded', intent(over)),
+    );
+    await expect(gateway().parseWebhook(body, headers)).resolves.toMatchObject({
+      kind: 'ignored',
+      eventId: 'evt_1',
+    });
+  });
+
   it('ignores event types it does not handle', async () => {
     const { body, headers } = signed(
       event('customer.created', { id: 'cus_1' }),
