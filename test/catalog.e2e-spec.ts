@@ -56,16 +56,22 @@ describe('Catálogo (e2e)', () => {
       tourA = rows.find((t) => t.slug === slugA)!;
       if (rows.length === 0) break;
     }
+    // Un tour nuevo nace inactivo: operaciones lo activa cuando tenga precios y fechas.
     expect(tourA).toMatchObject({
       title: 'Tour A',
       durationHours: 2,
-      active: true,
+      active: false,
     });
 
     await http()
       .patch(`/api/tour-refs/${tourA.id}`)
       .set(admin.auth)
-      .send({ defaultCapacity: 8, minAge: 12, requiresWaiver: false })
+      .send({
+        defaultCapacity: 8,
+        minAge: 12,
+        requiresWaiver: false,
+        active: true,
+      })
       .expect(200);
 
     cmsTours = [
@@ -89,6 +95,41 @@ describe('Catálogo (e2e)', () => {
       minAge: 12,
       requiresWaiver: false,
     });
+  });
+
+  it('deactivates tours that are no longer published, and never on an empty CMS', async () => {
+    const all = cmsTours;
+    cmsTours = [];
+    const empty = await http()
+      .post('/api/tour-refs/sync')
+      .set(admin.auth)
+      .expect(200);
+    expect(empty.body).toMatchObject({ deactivated: 0 });
+    expect(
+      (await http().get(`/api/tour-refs/${tourA.id}`).set(admin.auth)).body,
+    ).toMatchObject({ active: true });
+
+    cmsTours = [{ slug: slugB, title: 'Tour B', durationHours: null }];
+    const res = await http()
+      .post('/api/tour-refs/sync')
+      .set(admin.auth)
+      .expect(200);
+    expect((res.body as Body).deactivated).toBeGreaterThanOrEqual(1);
+    expect(
+      (await http().get(`/api/tour-refs/${tourA.id}`).set(admin.auth)).body,
+    ).toMatchObject({ active: false });
+
+    // Reactivar es manual: volver a publicarlo no lo abre solo.
+    cmsTours = all;
+    await http().post('/api/tour-refs/sync').set(admin.auth).expect(200);
+    expect(
+      (await http().get(`/api/tour-refs/${tourA.id}`).set(admin.auth)).body,
+    ).toMatchObject({ active: false });
+    await http()
+      .patch(`/api/tour-refs/${tourA.id}`)
+      .set(admin.auth)
+      .send({ active: true })
+      .expect(200);
   });
 
   it('only lets staff with catalog:write sync or edit tours', async () => {

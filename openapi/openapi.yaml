@@ -701,10 +701,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [created, updated]
+                required: [created, updated, deactivated]
                 properties:
-                  created: { type: integer }
+                  created: { type: integer, description: Tours nuevos; nacen inactivos }
                   updated: { type: integer }
+                  deactivated: { type: integer, description: Tours que ya no están publicados en el CMS }
   /tour-refs/{id}:
     parameters:
       - $ref: '#/components/parameters/Id'
