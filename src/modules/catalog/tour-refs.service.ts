@@ -77,10 +77,16 @@ export class TourRefsService {
   /**
    * Trae los tours del CMS (sin caché) y crea/actualiza `TourRef` por slug.
    * Solo refresca título y duración: los ajustes operativos no se tocan.
-   * Un tour que desaparece del CMS no se borra ni se desactiva solo.
+   * Un tour que ya no está publicado en el CMS queda inactivo (no se borra) y uno nuevo nace
+   * inactivo hasta que operaciones le ponga precios y fechas. Reactivar es manual.
    */
   async sync(actorId: string, ip?: string) {
-    const tours = await this.cms.listTours({ fresh: true });
+    // Un tour publicado solo en español también cuenta: se unen los dos idiomas.
+    const [en, es] = await Promise.all([
+      this.cms.listTours({ fresh: true }),
+      this.cms.listTours({ fresh: true, locale: 'es' }),
+    ]);
+    const tours = [...new Map([...es, ...en].map((t) => [t.slug, t])).values()];
     const existing = new Map(
       (
         await this.prisma.tourRef.findMany({
@@ -91,6 +97,7 @@ export class TourRefsService {
     const now = new Date();
     let created = 0;
     let updated = 0;
+    let deactivated = 0;
     await this.prisma.$transaction(async (tx) => {
       for (const tour of tours) {
         const current = existing.get(tour.slug);
@@ -100,6 +107,7 @@ export class TourRefsService {
               slug: tour.slug,
               title: tour.title,
               durationHours: tour.durationHours,
+              active: false,
               cmsSyncedAt: now,
             },
           });
@@ -116,18 +124,27 @@ export class TourRefsService {
           updated++;
         }
       }
+      // shortcut: sin webhook, esto corre solo al sincronizar; automatizarlo si se despublica a menudo.
+      // Con el CMS vacío no se desactiva nada: es más probable una falla que "no hay tours".
+      if (tours.length) {
+        const gone = await tx.tourRef.updateMany({
+          where: { active: true, slug: { notIn: tours.map((t) => t.slug) } },
+          data: { active: false, cmsSyncedAt: now },
+        });
+        deactivated = gone.count;
+      }
       await this.audit.record(
         {
           actorUserId: actorId,
           action: 'tourRef.sync',
           entity: 'TourRef',
           entityId: 'all',
-          after: { created, updated },
+          after: { created, updated, deactivated },
           ip,
         },
         tx,
       );
     });
-    return { created, updated };
+    return { created, updated, deactivated };
   }
 }
