@@ -705,6 +705,7 @@ paths:
                 properties:
                   created: { type: integer, description: Tours nuevos; nacen inactivos }
                   updated: { type: integer }
+                  deactivated: { type: integer, description: Tours que ya no están publicados en el CMS }
   /tour-refs/{id}:
     parameters:
       - $ref: '#/components/parameters/Id'
@@ -719,7 +720,6 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TourRef' }
-                  deactivated: { type: integer, description: Tours que ya no están publicados en el CMS }
         '404': { $ref: '#/components/responses/Error' }
     patch:
       operationId: updateTourRef
