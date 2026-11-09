@@ -20,6 +20,8 @@ COPY --chown=node:node package.json package-lock.json prisma.config.ts ./
 COPY --chown=node:node prisma ./prisma
 COPY --from=deps --chown=node:node /app/node_modules ./node_modules
 COPY --from=build --chown=node:node /app/dist ./dist
+# `npm run prisma:seed` (first deploy) runs prisma/seed.ts with tsx, which imports the generated client and the roles from src.
+COPY --from=build --chown=node:node /app/src ./src
 # Sin devDependencies; `prisma`, `dotenv` y `tsx` son dependencias porque el despliegue corre `prisma migrate deploy` y el seed.
 RUN npm prune --omit=dev --ignore-scripts
 # Directorio de los comprobantes (DOCUMENT_STORAGE_DIR por defecto): debe existir y ser del usuario `node`.
