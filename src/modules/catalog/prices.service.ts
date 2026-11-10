@@ -4,8 +4,9 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
+import type { Currency } from '../../generated/prisma/enums';
 import { paginated, skipTake } from '../../common/pagination/pagination';
-import { stringToDbDate } from '../../common/time/lima';
+import { limaDate, stringToDbDate } from '../../common/time/lima';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { toPriceRuleDto } from './catalog.mappers';
@@ -17,6 +18,32 @@ export class PricesService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
   ) {}
+
+  /**
+   * Precio "desde" de cada tour activo en `currency`: la regla vigente hoy más barata, por persona si las
+   * hay; si el tour solo tiene reglas por grupo, la de grupo más barata.
+   */
+  async fromPrices(currency: Currency) {
+    const today = new Date(`${limaDate(new Date())}T00:00:00.000Z`);
+    const rules = await this.prisma.priceRule.findMany({
+      where: {
+        currency,
+        active: true,
+        tourRef: { active: true },
+        AND: [
+          { OR: [{ validFrom: null }, { validFrom: { lte: today } }] },
+          { OR: [{ validTo: null }, { validTo: { gte: today } }] },
+        ],
+      },
+      select: {
+        unit: true,
+        adultCents: true,
+        groupCents: true,
+        tourRef: { select: { slug: true } },
+      },
+    });
+    return { data: cheapestBySlug(rules) };
+  }
 
   async list(q: PriceRuleQuery) {
     const where: Prisma.PriceRuleWhereInput = q.tourRefId
@@ -146,4 +173,36 @@ export class PricesService {
       active: dto.active ?? true,
     };
   }
+}
+
+type FromRule = {
+  unit: 'PER_PERSON' | 'PER_GROUP';
+  adultCents: number;
+  groupCents: number | null;
+  tourRef: { slug: string };
+};
+
+/** Per tour, the cheapest per-person price; a tour priced only per group gets its cheapest group price. */
+export function cheapestBySlug(rules: FromRule[]) {
+  const best = new Map<
+    string,
+    { slug: string; fromCents: number; unit: 'PER_PERSON' | 'PER_GROUP' }
+  >();
+  for (const r of rules) {
+    const unit = r.unit;
+    const cents =
+      unit === 'PER_GROUP' ? (r.groupCents ?? r.adultCents) : r.adultCents;
+    const current = best.get(r.tourRef.slug);
+    const better =
+      !current ||
+      (unit === 'PER_PERSON' && current.unit === 'PER_GROUP') ||
+      (unit === current.unit && cents < current.fromCents);
+    if (better)
+      best.set(r.tourRef.slug, {
+        slug: r.tourRef.slug,
+        fromCents: cents,
+        unit,
+      });
+  }
+  return [...best.values()].sort((a, b) => a.slug.localeCompare(b.slug));
 }

@@ -157,6 +157,10 @@ export class CancellationPolicyInputDto {
 }
 
 // ---------------------------------------------------------------- Público
+export class TourPricesQuery {
+  @IsEnum(Currency) currency!: Currency;
+}
+
 export class AvailabilityQuery {
   @Matches(/^\d{4}-(0[1-9]|1[0-2])$/) month!: string;
   @IsEnum(Currency) currency!: Currency;

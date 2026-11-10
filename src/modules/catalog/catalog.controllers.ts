@@ -26,6 +26,7 @@ import {
 import { DeparturesService } from './departures.service';
 import {
   AvailabilityQuery,
+  TourPricesQuery,
   BlackoutInputDto,
   CancellationPolicyInputDto,
   CreateDepartureDto,
@@ -222,7 +223,15 @@ export class CancellationPoliciesController {
 @Public()
 @Controller('public')
 export class PublicCatalogController {
-  constructor(private readonly availability: AvailabilityService) {}
+  constructor(
+    private readonly availability: AvailabilityService,
+    private readonly prices: PricesService,
+  ) {}
+
+  @Get('tour-prices')
+  tourPrices(@Query() q: TourPricesQuery) {
+    return this.prices.fromPrices(q.currency);
+  }
 
   @Get('tours/:slug/availability')
   @Throttle(rateLimit(60, 60_000))
