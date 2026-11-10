@@ -165,6 +165,60 @@ describe('Cumplimiento (e2e)', () => {
       expect(data.find((d) => d.kind === 'PRIVACY')!.id).toBe(ids[1]);
       await http().get('/api/public/legal-documents/current').expect(422);
     });
+
+    it('publishes text written in the backoffice and serves it to the web', async () => {
+      const locale = await freshLocaleIn(prisma);
+      await http()
+        .get('/api/public/legal-documents/TERMS')
+        .query({ locale })
+        .expect(404);
+
+      const published = await http()
+        .post('/api/legal-documents')
+        .set(admin.auth)
+        .send({
+          kind: 'TERMS',
+          locale,
+          title: 'Términos y condiciones',
+          text: '## Reservas\n\nTexto escrito en el backoffice.',
+        })
+        .expect(201);
+      const doc = published.body as Body;
+      expect(doc).toMatchObject({ kind: 'TERMS', version: 1, cmsSlug: 'terms' });
+
+      const shown = await http()
+        .get('/api/public/legal-documents/TERMS')
+        .query({ locale })
+        .expect(200);
+      expect(shown.body).toMatchObject({
+        id: doc.id,
+        title: 'Términos y condiciones',
+        text: '## Reservas\n\nTexto escrito en el backoffice.',
+      });
+
+      const staff = await http()
+        .get(`/api/legal-documents/${doc.id as string}`)
+        .set(admin.auth)
+        .expect(200);
+      expect((staff.body as Body).text).toBe(
+        '## Reservas\n\nTexto escrito en el backoffice.',
+      );
+
+      await http()
+        .get('/api/public/legal-documents/WAIVER')
+        .query({ locale })
+        .expect(404);
+      await http()
+        .post('/api/legal-documents')
+        .set(admin.auth)
+        .send({ kind: 'TERMS', locale, text: 'Sin título' })
+        .expect(422);
+      await http()
+        .post('/api/legal-documents')
+        .set(operator.auth)
+        .send({ kind: 'TERMS', locale, title: 'x', text: 'x' })
+        .expect(403);
+    });
   });
 
   describe('Libro de Reclamaciones', () => {

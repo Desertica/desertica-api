@@ -4,6 +4,7 @@ import {
   Get,
   HttpCode,
   Param,
+  ParseEnumPipe,
   Post,
   Query,
   Req,
@@ -11,7 +12,8 @@ import {
 import { Throttle } from '@nestjs/throttler';
 import { rateLimit } from '../../common/throttle';
 import type { Request } from 'express';
-import { IntIdPipe } from '../../common/pipes/id-pipes';
+import { IntIdPipe, UuidPipe } from '../../common/pipes/id-pipes';
+import { LegalDocumentKind } from '../../generated/prisma/enums';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser, Public, RequirePermission } from '../auth/decorators';
 import { ComplaintsService } from './complaints.service';
@@ -30,6 +32,15 @@ import {
 import { LegalService } from './legal.service';
 import { PublicComplianceService } from './public-compliance.service';
 import { WaiversService } from './waivers.service';
+
+/** Documentos globales que la web muestra en sus páginas legales (el descargo es por tour). */
+const PUBLIC_LEGAL_KINDS = {
+  TERMS: LegalDocumentKind.TERMS,
+  PRIVACY: LegalDocumentKind.PRIVACY,
+  CANCELLATION: LegalDocumentKind.CANCELLATION,
+  COOKIES: LegalDocumentKind.COOKIES,
+  CONDUCT: LegalDocumentKind.CONDUCT,
+};
 
 @Controller('complaints')
 export class ComplaintsController {
@@ -77,6 +88,12 @@ export class StaffComplianceController {
   @RequirePermission('catalog:read')
   listLegal(@Query() q: LegalDocumentQuery) {
     return this.legal.list(q);
+  }
+
+  @Get('legal-documents/:id')
+  @RequirePermission('catalog:read')
+  getLegal(@Param('id', UuidPipe) id: string) {
+    return this.legal.getWithText(id);
   }
 
   @Post('legal-documents')
@@ -146,5 +163,17 @@ export class PublicComplianceController {
   @Get('legal-documents/current')
   currentLegal(@Query() q: LocaleQuery) {
     return this.legal.current(q.locale);
+  }
+
+  @Get('legal-documents/:kind')
+  publicLegal(
+    @Param(
+      'kind',
+      new ParseEnumPipe(PUBLIC_LEGAL_KINDS, { errorHttpStatusCode: 404 }),
+    )
+    kind: LegalDocumentKind,
+    @Query() q: LocaleQuery,
+  ) {
+    return this.legal.currentWithText(kind, q.locale);
   }
 }

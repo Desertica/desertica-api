@@ -95,6 +95,10 @@ export class PublishLegalDto {
   cmsSlug?: string;
   /** Solo para `WAIVER`: el tour cuyo descargo se publica. */
   @IsOptional() @IsUUID() tourRefId?: string;
+  /** Obligatorio con `text`. */
+  @IsOptional() @IsString() @MaxLength(200) title?: string;
+  /** Texto (Markdown) escrito en el backoffice. Sin él se toma del CMS (en desuso). */
+  @IsOptional() @IsString() @MaxLength(100_000) text?: string;
 }
 
 export class LegalDocumentQuery extends PaginationQuery {
