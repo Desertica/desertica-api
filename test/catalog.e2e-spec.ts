@@ -3,6 +3,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { CmsClient, CmsTour } from '../src/modules/cms/cms.client';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { createCatalog } from './fixtures';
 import { createTestApp, loginAs, TestSession } from './helpers';
 
 const run = Math.random().toString(36).slice(2, 8);
@@ -222,6 +223,43 @@ describe('Catálogo (e2e)', () => {
         })
         .expect(422);
     });
+  });
+
+  it('serves the "from" price of each active tour in a currency', async () => {
+    const { tour } = await createCatalog(app);
+    const cheaper = await prisma.priceRule.create({
+      data: { tourRefId: tour.id, currency: 'USD', adultCents: 7900 },
+    });
+    const usd = await request(app.getHttpServer())
+      .get('/api/public/tour-prices')
+      .query({ currency: 'USD' })
+      .expect(200);
+    expect(
+      (usd.body as { data: { slug: string }[] }).data.find(
+        (p) => p.slug === tour.slug,
+      ),
+    ).toEqual({ slug: tour.slug, fromCents: 7900, unit: 'PER_PERSON' });
+
+    await prisma.priceRule.update({
+      where: { id: cheaper.id },
+      data: { active: false },
+    });
+    await prisma.tourRef.update({
+      where: { id: tour.id },
+      data: { active: false },
+    });
+    const hidden = await request(app.getHttpServer())
+      .get('/api/public/tour-prices')
+      .query({ currency: 'USD' })
+      .expect(200);
+    expect(
+      (hidden.body as { data: { slug: string }[] }).data.some(
+        (p) => p.slug === tour.slug,
+      ),
+    ).toBe(false);
+    await request(app.getHttpServer())
+      .get('/api/public/tour-prices')
+      .expect(422);
   });
 
   describe('price rules', () => {

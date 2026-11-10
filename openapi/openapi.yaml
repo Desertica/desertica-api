@@ -138,6 +138,40 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/AvailableDeparture' }
         '404': { $ref: '#/components/responses/Error' }
+  /public/tour-prices:
+    get:
+      operationId: getTourPrices
+      tags: [Public]
+      summary: Precio "desde" de cada tour activo en una moneda
+      description: |
+        El precio más bajo vigente hoy de cada tour activo, para las tarjetas y la ficha de la web (el CMS ya no
+        guarda precios). Por persona cuando el tour tiene reglas por persona; si solo tiene reglas por grupo, el
+        precio del grupo con `unit: PER_GROUP`. Un tour sin reglas vigentes en esa moneda no aparece.
+      security: []
+      parameters:
+        - name: currency
+          in: query
+          required: true
+          schema: { $ref: '#/components/schemas/Currency' }
+      responses:
+        '422': { $ref: '#/components/responses/Error' }
+        '200':
+          description: Precios desde
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [slug, fromCents, unit]
+                      properties:
+                        slug: { type: string }
+                        fromCents: { type: integer, description: Con IGV incluido. }
+                        unit: { type: string, enum: [PER_PERSON, PER_GROUP] }
   /public/quotes:
     post:
       operationId: createQuote
