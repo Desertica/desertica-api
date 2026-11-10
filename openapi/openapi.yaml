@@ -521,6 +521,33 @@ paths:
                 policyVersion: { type: integer }
       responses:
         '204': { description: Registrado }
+  /public/legal-documents/{kind}:
+    get:
+      operationId: getPublicLegalDocument
+      tags: [Public]
+      summary: Versión vigente de un documento legal, con su texto
+      description: |
+        La última versión publicada de un documento global (no `WAIVER`) en `locale`. La web la usa para las
+        páginas legales (`/terms`, `/privacy`...), así que lo que se muestra es exactamente lo que se acepta.
+        404 si no hay ninguna versión publicada en ese idioma.
+      security: []
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [TERMS, PRIVACY, CANCELLATION, COOKIES, CONDUCT] }
+        - name: locale
+          in: query
+          required: true
+          schema: { type: string, example: es }
+      responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '422': { $ref: '#/components/responses/Error' }
+        '200':
+          description: Versión vigente con su texto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegalDocumentWithText' }
   /public/legal-documents/current:
     get:
       operationId: getCurrentLegalDocuments
@@ -1913,8 +1940,10 @@ paths:
       tags: [Compliance]
       summary: Publicar una nueva versión de un documento legal
       description: |
-        Guarda un snapshot inmutable del texto del CMS en el idioma `locale` (un trigger de la base impide
-        modificarlo o borrarlo).
+        Guarda un snapshot inmutable del texto en el idioma `locale` (un trigger de la base impide
+        modificarlo o borrarlo). El texto se escribe en el backoffice: con `text` (y `title`) se publica ese
+        texto tal cual y no se consulta el CMS. Sin `text` se toma del CMS como antes (en desuso: se retira
+        cuando la web y el backoffice dejen de usarlo).
         - Documentos globales (`TERMS`, `PRIVACY`, `CANCELLATION`, `COOKIES`, `CONDUCT`): la página
           `cmsSlug`; la versión es la siguiente de `(kind, locale)`.
         - `WAIVER`: el campo `waiverBody` del tour `tourRefId` en ese idioma (no lleva `cmsSlug`); la versión
@@ -1933,8 +1962,10 @@ paths:
               properties:
                 kind: { $ref: '#/components/schemas/LegalDocumentKind' }
                 locale: { type: string }
-                cmsSlug: { type: string, description: Obligatorio salvo con `WAIVER`. }
+                cmsSlug: { type: string, description: 'Sin `text`, obligatorio salvo con `WAIVER`. Con `text` es opcional: por defecto el slug de la página legal de ese tipo (`terms`, `privacy`, `cancellation`, `cookies`, `conduct`).' }
                 tourRefId: { type: string, format: uuid, description: Obligatorio con `WAIVER` y no admitido con los demás. }
+                title: { type: string, maxLength: 200, description: Obligatorio con `text`. }
+                text: { type: string, maxLength: 100000, description: Texto en Markdown que se publica. Sin él se toma del CMS. }
       responses:
         '422': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
@@ -1976,6 +2007,22 @@ paths:
                   meta: { $ref: '#/components/schemas/Meta' }
 
   # ------------------------------------------------------------------- Admin
+  /legal-documents/{id}:
+    get:
+      operationId: getLegalDocument
+      tags: [Compliance]
+      summary: Una versión publicada con su texto
+      description: Para el editor del backoffice, que parte del texto de la versión vigente al publicar una nueva.
+      x-permission: catalog:read
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '404': { $ref: '#/components/responses/Error' }
+        '200':
+          description: Versión con su texto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LegalDocumentWithText' }
   /users:
     get:
       operationId: listUsers
@@ -3159,6 +3206,14 @@ components:
         cmsSlug: { type: string, description: 'Slug de la página en el CMS; con `WAIVER`, el del tour.' }
         tourRefId: { type: [string, 'null'], format: uuid, description: Solo con `WAIVER`. }
         publishedAt: { type: string, format: date-time }
+    LegalDocumentWithText:
+      description: Una versión publicada con el texto que se publicó (Markdown).
+      allOf:
+        - $ref: '#/components/schemas/LegalDocument'
+        - type: object
+          required: [text]
+          properties:
+            text: { type: string }
     CreateComplaint:
       type: object
       required: [kind, goodType, consumerName, idDocType, idDocNumber, address, email, description, detail, request]
