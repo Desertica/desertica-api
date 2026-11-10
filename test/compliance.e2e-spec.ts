@@ -184,7 +184,11 @@ describe('Cumplimiento (e2e)', () => {
         })
         .expect(201);
       const doc = published.body as Body;
-      expect(doc).toMatchObject({ kind: 'TERMS', version: 1, cmsSlug: 'terms' });
+      expect(doc).toMatchObject({
+        kind: 'TERMS',
+        version: 1,
+        cmsSlug: 'terms',
+      });
 
       const shown = await http()
         .get('/api/public/legal-documents/TERMS')
