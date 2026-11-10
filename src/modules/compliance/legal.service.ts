@@ -44,6 +44,15 @@ export const toLegalDto = (d: {
   contentHash: d.contentHash,
 });
 
+/** Slug de la página legal de cada tipo global; con texto escrito en el backoffice se guarda para la web. */
+export const LEGAL_SLUGS: Partial<Record<LegalDocumentKind, string>> = {
+  TERMS: 'terms',
+  PRIVACY: 'privacy',
+  CANCELLATION: 'cancellation',
+  COOKIES: 'cookies',
+  CONDUCT: 'conduct',
+};
+
 export function hashLegalText(title: string, text: string): string {
   return createHash('sha256').update(`${title}\n\n${text}`).digest('hex');
 }
@@ -71,14 +80,18 @@ export class LegalService {
       locale: string;
       cmsSlug?: string;
       tourRefId?: string;
+      title?: string;
+      text?: string;
     },
     actorId: string,
     ip?: string,
   ) {
     const snapshot =
-      dto.kind === 'WAIVER'
-        ? await this.waiverSnapshot(dto)
-        : await this.pageSnapshot(dto);
+      dto.text !== undefined
+        ? await this.textSnapshot(dto)
+        : dto.kind === 'WAIVER'
+          ? await this.waiverSnapshot(dto)
+          : await this.pageSnapshot(dto);
     const scopeKey = snapshot.tourRefId ?? '';
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`legal:${dto.kind}:${dto.locale}:${scopeKey}`}))`;
@@ -114,6 +127,45 @@ export class LegalService {
       return created;
     });
     return toLegalDto(row);
+  }
+
+  /** Texto escrito en el backoffice: se publica tal cual, sin consultar el CMS. */
+  private async textSnapshot(dto: {
+    kind: LegalDocumentKind;
+    cmsSlug?: string;
+    tourRefId?: string;
+    title?: string;
+    text?: string;
+  }) {
+    const title = dto.title?.trim();
+    const body = dto.text?.trim();
+    if (!title || !body) {
+      throw new UnprocessableEntityException('title and text are required');
+    }
+    if (dto.kind !== 'WAIVER') {
+      if (dto.tourRefId) {
+        throw new UnprocessableEntityException(
+          'tourRefId only applies to WAIVER documents',
+        );
+      }
+      return {
+        tourRefId: null,
+        cmsSlug: dto.cmsSlug ?? LEGAL_SLUGS[dto.kind] ?? dto.kind.toLowerCase(),
+        title,
+        body,
+      };
+    }
+    if (!dto.tourRefId) {
+      throw new UnprocessableEntityException(
+        'tourRefId is required for a WAIVER',
+      );
+    }
+    const tour = await this.prisma.tourRef.findUnique({
+      where: { id: dto.tourRefId },
+      select: { id: true, slug: true },
+    });
+    if (!tour) throw new UnprocessableEntityException('Unknown tourRefId');
+    return { tourRefId: tour.id, cmsSlug: tour.slug, title, body };
   }
 
   private async pageSnapshot(dto: {
@@ -269,6 +321,24 @@ export class LegalService {
       });
     }
     return docs;
+  }
+
+  /** Una versión con su texto (editor del backoffice). */
+  async getWithText(id: string) {
+    const doc = await this.getSnapshot(id);
+    return { ...toLegalDto(doc), text: doc.textSnapshot };
+  }
+
+  /** Última versión de un documento global en `locale`, con su texto (páginas legales de la web). */
+  async currentWithText(kind: LegalDocumentKind, locale: string) {
+    if (kind === 'WAIVER')
+      throw new NotFoundException('Legal document not found');
+    const doc = await this.prisma.legalDocument.findFirst({
+      where: { kind, locale, tourRefId: null },
+      orderBy: { version: 'desc' },
+    });
+    if (!doc) throw new NotFoundException('Legal document not found');
+    return { ...toLegalDto(doc), text: doc.textSnapshot };
   }
 
   async getSnapshot(id: string) {
