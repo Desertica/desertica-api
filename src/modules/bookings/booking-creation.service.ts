@@ -116,6 +116,11 @@ export class BookingCreationService {
     validateBilling(dto.billing);
     const children = dto.children ?? 0;
     const people = dto.adults + children;
+    await this.settings.assertPartySize({
+      adults: dto.adults,
+      children,
+      people,
+    });
     if (dto.passengers && dto.passengers.length > people) {
       throw new UnprocessableEntityException(
         'There are more passengers than seats',

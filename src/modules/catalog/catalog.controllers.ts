@@ -39,6 +39,7 @@ import {
 } from './dto/catalog.dto';
 import { ManifestService } from './manifest.service';
 import { PricesService } from './prices.service';
+import { SettingsService } from '../settings/settings.service';
 import { TourRefsService } from './tour-refs.service';
 
 @Controller('tour-refs')
@@ -226,7 +227,21 @@ export class PublicCatalogController {
   constructor(
     private readonly availability: AvailabilityService,
     private readonly prices: PricesService,
+    private readonly tourRefs: TourRefsService,
+    private readonly settings: SettingsService,
   ) {}
+
+  @Get('booking-rules')
+  @Throttle(rateLimit(60, 60_000))
+  bookingRules() {
+    return this.settings.bookingRules();
+  }
+
+  @Get('tours')
+  @Throttle(rateLimit(60, 60_000))
+  listTours() {
+    return this.tourRefs.publicList();
+  }
 
   @Get('tour-prices')
   tourPrices(@Query() q: TourPricesQuery) {

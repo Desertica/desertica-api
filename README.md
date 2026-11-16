@@ -52,10 +52,11 @@ src/
   modules/
     auth/                 Login con Google, JWT, refresh con rotación, guard, permisos
     users/, roles/, audit/  Staff, roles (admin, operator) y auditoría de solo inserción
-    settings/             Ajustes operativos (depósito, bloqueo, tope de reembolso, plazos)
+    settings/             Ajustes operativos (depósito, bloqueo, reglas de reserva de la web, tope de
+                          reembolso, plazos)
     cms/                  Cliente de solo lectura del CMS con caché y último valor bueno
-    catalog/              TourRef, salidas (con series), precios, bloqueos, políticas,
-                          disponibilidad pública y cotización
+    catalog/              TourRef (con los datos operativos del tour), salidas (con series), precios,
+                          bloqueos, políticas, disponibilidad pública y cotización
     bookings/             Bloqueo de cupo, reservas web y manuales, pagos manuales, enlaces de
                           pago, cancelación, reprogramación, vencimientos
     admin/                Empresa y series, bloqueos de correos e IP, panel y reporte de ventas,

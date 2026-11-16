@@ -1,6 +1,7 @@
 import {
   addBusinessDays,
   addDays,
+  addMonths,
   limaDate,
   limaMonthRange,
   limaStartOfDay,
@@ -18,6 +19,12 @@ describe('Lima time helpers', () => {
     // 2026-10-04 es domingo.
     expect(limaWeekday(new Date('2026-10-05T02:00:00Z'))).toBe(0);
     expect(limaWeekday(new Date('2026-10-05T05:00:00Z'))).toBe(1);
+  });
+
+  it('adds months across the year boundary', () => {
+    expect(addMonths('2026-11', 0)).toBe('2026-11');
+    expect(addMonths('2026-11', 2)).toBe('2027-01');
+    expect(addMonths('2026-01', 11)).toBe('2026-12');
   });
 
   it('computes start of day and month ranges in UTC', () => {

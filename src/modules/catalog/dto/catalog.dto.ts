@@ -8,8 +8,11 @@ import {
   IsEnum,
   IsInt,
   IsISO8601,
+  IsNumber,
+  IsObject,
   IsOptional,
   IsString,
+  IsUrl,
   IsUUID,
   Matches,
   Max,
@@ -24,12 +27,56 @@ import {
   DepartureStatus,
   PriceUnit,
   TourFormat,
+  TourOffer,
 } from '../../../generated/prisma/enums';
 
 const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
 
 // ------------------------------------------------------------- Tour refs
+export class MeetingPointDto {
+  @IsOptional() @IsString() @MaxLength(2000) en?: string;
+  @IsOptional() @IsString() @MaxLength(2000) es?: string;
+}
+
 export class UpdateTourRefDto {
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsInt()
+  @Min(1)
+  @Max(240)
+  durationHours?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsEnum(TourOffer)
+  format?: TourOffer | null;
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @Matches(/^[a-z]{2}$/, { each: true })
+  languages?: string[];
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsObject()
+  @ValidateNested()
+  @Type(() => MeetingPointDto)
+  meetingPoint?: MeetingPointDto | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsUrl({ protocols: ['http', 'https'], require_protocol: true })
+  @MaxLength(500)
+  meetingPointUrl?: string | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsNumber()
+  @Min(-90)
+  @Max(90)
+  latitude?: number | null;
+  @IsOptional()
+  @ValidateIf((_, v) => v !== null)
+  @IsNumber()
+  @Min(-180)
+  @Max(180)
+  longitude?: number | null;
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @IsBoolean() requiresWaiver?: boolean;
   @IsOptional()

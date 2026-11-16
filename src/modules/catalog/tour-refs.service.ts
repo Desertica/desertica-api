@@ -8,10 +8,11 @@ import {
   PaginationQuery,
   skipTake,
 } from '../../common/pagination/pagination';
+import { Prisma, TourRef } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { CmsClient } from '../cms/cms.client';
-import { toTourRefDto } from './catalog.mappers';
+import { CmsClient, CmsTour } from '../cms/cms.client';
+import { toPublicTourDto, toTourRefDto } from './catalog.mappers';
 import { UpdateTourRefDto } from './dto/catalog.dto';
 
 @Injectable()
@@ -39,6 +40,15 @@ export class TourRefsService {
     return toTourRefDto(row);
   }
 
+  /** Datos operativos de los tours activos, para la ficha de la web. */
+  async publicList() {
+    const rows = await this.prisma.tourRef.findMany({
+      where: { active: true },
+      orderBy: { slug: 'asc' },
+    });
+    return { data: rows.map(toPublicTourDto) };
+  }
+
   async update(
     id: string,
     dto: UpdateTourRefDto,
@@ -56,7 +66,20 @@ export class TourRefsService {
       }
     }
     const row = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.tourRef.update({ where: { id }, data: dto });
+      const { meetingPoint, ...rest } = dto;
+      const updated = await tx.tourRef.update({
+        where: { id },
+        data: {
+          ...rest,
+          // Una columna Json se vacía con `DbNull`, no con `null`.
+          ...(meetingPoint === undefined
+            ? {}
+            : {
+                meetingPoint:
+                  meetingPoint === null ? Prisma.DbNull : { ...meetingPoint },
+              }),
+        },
+      });
       await this.audit.record(
         {
           actorUserId: actorId,
@@ -76,7 +99,9 @@ export class TourRefsService {
 
   /**
    * Trae los tours del CMS (sin caché) y crea/actualiza `TourRef` por slug.
-   * Solo refresca título y duración: los ajustes operativos no se tocan.
+   * Solo refresca el título: los datos y ajustes operativos son del API y no se tocan.
+   * Importación única: duración, formato, idiomas, punto de encuentro, su enlace y coordenadas se
+   * copian del CMS solo si aquí siguen vacíos (el CMS está dejando de tener esos campos).
    * Un tour que ya no está publicado en el CMS queda inactivo (no se borra) y uno nuevo nace
    * inactivo hasta que operaciones le ponga precios y fechas. Reactivar es manual.
    */
@@ -87,6 +112,38 @@ export class TourRefsService {
       this.cms.listTours({ fresh: true, locale: 'es' }),
     ]);
     const tours = [...new Map([...es, ...en].map((t) => [t.slug, t])).values()];
+    const meetingOf = (list: typeof en, slug: string) =>
+      list.find((t) => t.slug === slug)?.meeting;
+    const empty = (v: unknown) =>
+      v === null || v === undefined || (Array.isArray(v) && v.length === 0);
+    /** Importación única: valores del CMS para los campos que en `current` siguen vacíos. */
+    const importOnce = (tour: CmsTour, current?: TourRef) => {
+      const meetingEn = meetingOf(en, tour.slug);
+      const meetingEs = meetingOf(es, tour.slug);
+      const fromCms = {
+        durationHours: tour.durationHours,
+        format: tour.format,
+        languages: tour.languages,
+        meetingPoint:
+          meetingEn || meetingEs
+            ? {
+                ...(meetingEn ? { en: meetingEn } : {}),
+                ...(meetingEs ? { es: meetingEs } : {}),
+              }
+            : null,
+        meetingPointUrl: tour.meetingPointUrl,
+        latitude: tour.latitude,
+        longitude: tour.longitude,
+      };
+      return Object.fromEntries(
+        Object.entries(fromCms).filter(
+          ([key, value]) =>
+            !empty(value) && empty(current?.[key as keyof typeof fromCms]),
+        ),
+      ) as Partial<{
+        [K in keyof typeof fromCms]: NonNullable<(typeof fromCms)[K]>;
+      }>;
+    };
     const existing = new Map(
       (
         await this.prisma.tourRef.findMany({
@@ -106,7 +163,7 @@ export class TourRefsService {
             data: {
               slug: tour.slug,
               title: tour.title,
-              durationHours: tour.durationHours,
+              ...importOnce(tour),
               active: false,
               cmsSyncedAt: now,
             },
@@ -117,7 +174,7 @@ export class TourRefsService {
             where: { id: current.id },
             data: {
               title: tour.title,
-              durationHours: tour.durationHours,
+              ...importOnce(tour, current),
               cmsSyncedAt: now,
             },
           });
