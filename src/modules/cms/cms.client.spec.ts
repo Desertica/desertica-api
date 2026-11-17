@@ -38,24 +38,82 @@ const ok = (data: unknown) =>
 afterEach(() => jest.restoreAllMocks());
 
 describe('CmsClient', () => {
-  it('maps tours to slug, title and duration and sends the token', async () => {
+  const noOperationalData = {
+    durationHours: null,
+    format: null,
+    languages: [],
+    meeting: null,
+    meetingPointUrl: null,
+    latitude: null,
+    longitude: null,
+  };
+
+  it('maps tours with the operational data the CMS still has and sends the token', async () => {
     const spy = mockFetch(() =>
       ok([
-        { slug: 'dune-buggy', title: 'Dune Buggy', durationHours: 2 },
-        { slug: 'no-title', durationHours: null },
+        {
+          slug: 'dune-buggy',
+          title: 'Dune Buggy',
+          durationHours: 2,
+          format: 'both',
+          languages: ['es', 'EN', 'español', 7],
+          meeting: ' Meet in Ica ',
+          meetingPointUrl: 'https://maps.example/x',
+          latitude: '-14.0875',
+          longitude: -75.7626,
+        },
+        {
+          slug: 'no-title',
+          durationHours: null,
+          format: 'group',
+          meetingPointUrl: 'javascript:alert(1)',
+          latitude: 91,
+        },
         { title: 'no slug' },
       ]),
     );
     const tours = await build().listTours();
     expect(tours).toEqual([
-      { slug: 'dune-buggy', title: 'Dune Buggy', durationHours: 2 },
-      { slug: 'no-title', title: 'no-title', durationHours: null },
+      {
+        slug: 'dune-buggy',
+        title: 'Dune Buggy',
+        durationHours: 2,
+        format: 'BOTH',
+        languages: ['es', 'en'],
+        meeting: 'Meet in Ica',
+        meetingPointUrl: 'https://maps.example/x',
+        latitude: -14.0875,
+        longitude: -75.7626,
+      },
+      { slug: 'no-title', title: 'no-title', ...noOperationalData },
     ]);
     const [url, init] = spy.mock.calls[0] as [string, RequestInit];
     expect(url.startsWith('http://cms.test/api/tours?locale=en')).toBe(true);
+    expect(url).toContain('=durationHours');
     expect((init.headers as Record<string, string>).Authorization).toBe(
       'Bearer secret',
     );
+  });
+
+  it('asks only for slug and title once the CMS no longer has the operational fields', async () => {
+    // Strapi 5 responde 400 a un `fields[...]` que no existe.
+    const spy = mockFetch((url) =>
+      url.includes('durationHours')
+        ? Promise.resolve({
+            ok: false,
+            status: 400,
+            json: () => Promise.resolve({ error: { name: 'ValidationError' } }),
+          })
+        : ok([{ slug: 'dune-buggy', title: 'Dune Buggy' }]),
+    );
+    await expect(build().listTours({ locale: 'es' })).resolves.toEqual([
+      { slug: 'dune-buggy', title: 'Dune Buggy', ...noOperationalData },
+    ]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    const retry = (spy.mock.calls[1] as [string])[0];
+    expect(retry).toContain('locale=es');
+    expect(retry).toContain('fields[0]=slug&fields[1]=title');
+    expect(retry).not.toContain('fields[2]');
   });
 
   it('serves from cache within the TTL', async () => {

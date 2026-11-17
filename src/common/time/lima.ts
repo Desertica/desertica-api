@@ -44,6 +44,12 @@ export function limaMonthRange(month: string): { from: Date; to: Date } {
   return { from: limaStartOfDay(first), to: limaStartOfDay(next) };
 }
 
+/** Suma `months` a un mes `YYYY-MM`. */
+export function addMonths(month: string, months: number): string {
+  const [y, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1 + months, 1)).toISOString().slice(0, 7);
+}
+
 /** Suma `days` a una fecha `YYYY-MM-DD` (calendario gregoriano, sin zona). */
 export function addDays(date: string, days: number): string {
   const [y, m, d] = date.split('-').map(Number);

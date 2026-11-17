@@ -39,6 +39,13 @@ enum TourFormat {
   PRIVATE
 }
 
+/// Modalidades en que se ofrece un tour (dato de ficha); las salidas siguen usando `TourFormat`.
+enum TourOffer {
+  SHARED
+  PRIVATE
+  BOTH
+}
+
 enum PriceUnit {
   PER_PERSON
   PER_GROUP
@@ -286,6 +293,14 @@ model TourRef {
   /// Snapshot del título (en) para listados del backoffice; se refresca al sincronizar.
   title                String
   durationHours        Int?
+  format               TourOffer?
+  /// Idiomas en que se ofrece: códigos de dos letras en minúscula.
+  languages            String[]            @default([])
+  /// Punto de encuentro por idioma: `{ en?: string, es?: string }`.
+  meetingPoint         Json?
+  meetingPointUrl      String?
+  latitude             Float?
+  longitude            Float?
   active               Boolean             @default(true)
   requiresWaiver       Boolean             @default(true)
   minAge               Int?

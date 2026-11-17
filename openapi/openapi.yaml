@@ -108,6 +108,9 @@ paths:
       operationId: getTourAvailability
       tags: [Public]
       summary: Disponibilidad y precios de un tour para un mes
+      description: |
+        Solo hay salidas hasta el fin del mes que queda `availabilityMonths - 1` meses después del actual (hora
+        de Lima): con 3, el mes en curso y los dos siguientes. Un mes posterior responde con `data` vacío.
       security: []
       parameters:
         - $ref: '#/components/parameters/TourSlug'
@@ -138,6 +141,43 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/AvailableDeparture' }
         '404': { $ref: '#/components/responses/Error' }
+  /public/tours:
+    get:
+      operationId: listPublicTours
+      tags: [Public]
+      summary: Datos operativos de los tours activos
+      description: |
+        Duración, formato, idiomas, punto de encuentro y edad y altura mínimas de cada tour activo, para la ficha
+        de la web (el CMS ya no guarda esos campos). El contenido editorial sigue en el CMS; se une por `slug`.
+      security: []
+      responses:
+        '200':
+          description: Tours activos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PublicTour' }
+  /public/booking-rules:
+    get:
+      operationId: getPublicBookingRules
+      tags: [Public]
+      summary: Reglas de reserva de la web
+      description: |
+        Meses del calendario, mínimos y máximo de personas y porcentaje de depósito (ajustes del backoffice). El
+        API las hace cumplir: `createQuote`, `createHold` y `createPublicBooking` responden 422 a un grupo fuera
+        de rango y `getTourAvailability` no devuelve salidas más allá de `availabilityMonths`.
+      security: []
+      responses:
+        '200':
+          description: Reglas vigentes
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicBookingRules' }
   /public/tour-prices:
     get:
       operationId: getTourPrices
@@ -199,7 +239,8 @@ paths:
         Reserva los asientos durante unos minutos mientras el cliente completa el pago. Responde 429 si la IP
         ya pidió demasiados bloqueos o si la salida ya tiene el máximo de bloqueos vigentes
         (`maxActiveHoldsPerDeparture`, 10 por defecto): en ese caso `details.reason` es `TOO_MANY_HOLDS` y
-        `details.retryAfterSeconds` dice cuándo se libera el primero.
+        `details.retryAfterSeconds` dice cuándo se libera el primero. Responde 422 si `seats` supera `peopleMax`
+        o no llega a `adultsMin + childrenMin` (ver `getPublicBookingRules`).
       security: []
       requestBody:
         required: true
@@ -224,6 +265,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/Error' }
         '429': { $ref: '#/components/responses/Error' }
   /public/holds/{token}:
     delete:
@@ -555,6 +597,20 @@ paths:
                 policyVersion: { type: integer }
       responses:
         '204': { description: Registrado }
+  /public/company:
+    get:
+      operationId: getPublicCompany
+      tags: [Public]
+      summary: Datos del proveedor para la hoja de reclamación
+      description: Razón social, RUC y domicilio fiscal de la empresa activa. No expone nada fiscal ni interno.
+      security: []
+      responses:
+        '200':
+          description: Datos del proveedor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PublicCompany' }
+        '404': { $ref: '#/components/responses/Error' }
   /public/legal-documents/{kind}:
     get:
       operationId: getPublicLegalDocument
@@ -785,7 +841,7 @@ paths:
     patch:
       operationId: updateTourRef
       tags: [Catalog]
-      summary: Editar ajustes operativos de un tour
+      summary: Editar datos y ajustes operativos de un tour
       x-permission: catalog:write
       requestBody:
         required: true
@@ -2559,6 +2615,10 @@ components:
     TourFormat:
       type: string
       enum: [SHARED, PRIVATE]
+    TourOffer:
+      type: string
+      description: Modalidades en que se ofrece un tour. Las salidas y los precios usan `TourFormat`.
+      enum: [SHARED, PRIVATE, BOTH]
     PriceUnit:
       type: string
       enum: [PER_PERSON, PER_GROUP]
@@ -2608,6 +2668,12 @@ components:
         slug: { type: string }
         title: { type: string }
         durationHours: { type: [integer, 'null'] }
+        format: { oneOf: [{ $ref: '#/components/schemas/TourOffer' }, { type: 'null' }] }
+        languages: { type: array, items: { type: string, pattern: '^[a-z]{2}$' }, description: Códigos de dos letras en minúscula. }
+        meetingPoint: { oneOf: [{ $ref: '#/components/schemas/TourMeetingPoint' }, { type: 'null' }] }
+        meetingPointUrl: { type: [string, 'null'], format: uri }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
         active: { type: boolean }
         requiresWaiver: { type: boolean }
         minAge: { type: [integer, 'null'] }
@@ -2615,9 +2681,46 @@ components:
         defaultCapacity: { type: [integer, 'null'] }
         cancellationPolicyId: { type: [string, 'null'], format: uuid }
         cmsSyncedAt: { type: [string, 'null'], format: date-time }
+    TourMeetingPoint:
+      type: object
+      description: Punto de encuentro por idioma.
+      additionalProperties: false
+      properties:
+        en: { type: string, maxLength: 2000 }
+        es: { type: string, maxLength: 2000 }
+    PublicTour:
+      type: object
+      required: [slug, durationHours, format, languages, meetingPoint, meetingPointUrl, latitude, longitude, minAge, minHeightCm]
+      properties:
+        slug: { type: string }
+        durationHours: { type: [integer, 'null'] }
+        format: { oneOf: [{ $ref: '#/components/schemas/TourOffer' }, { type: 'null' }] }
+        languages: { type: array, items: { type: string } }
+        meetingPoint: { oneOf: [{ $ref: '#/components/schemas/TourMeetingPoint' }, { type: 'null' }] }
+        meetingPointUrl: { type: [string, 'null'] }
+        latitude: { type: [number, 'null'] }
+        longitude: { type: [number, 'null'] }
+        minAge: { type: [integer, 'null'] }
+        minHeightCm: { type: [integer, 'null'] }
+    PublicBookingRules:
+      type: object
+      required: [depositPercent, availabilityMonths, adultsMin, childrenMin, peopleMax]
+      properties:
+        depositPercent: { type: integer, description: Porcentaje del total que se cobra como depósito. }
+        availabilityMonths: { type: integer, description: Meses que muestra el calendario (incluye el actual). }
+        adultsMin: { type: integer }
+        childrenMin: { type: integer }
+        peopleMax: { type: integer, description: Adultos más niños. }
     UpdateTourRef:
       type: object
       properties:
+        durationHours: { type: [integer, 'null'], minimum: 1, maximum: 240 }
+        format: { oneOf: [{ $ref: '#/components/schemas/TourOffer' }, { type: 'null' }] }
+        languages: { type: array, maxItems: 10, items: { type: string, pattern: '^[a-z]{2}$' } }
+        meetingPoint: { oneOf: [{ $ref: '#/components/schemas/TourMeetingPoint' }, { type: 'null' }] }
+        meetingPointUrl: { type: [string, 'null'], format: uri, maxLength: 500, description: Enlace http(s) al mapa. }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
         active: { type: boolean }
         requiresWaiver: { type: boolean }
         minAge: { type: [integer, 'null'] }
@@ -3248,6 +3351,14 @@ components:
           required: [text]
           properties:
             text: { type: string }
+    PublicCompany:
+      type: object
+      required: [legalName, ruc, fiscalAddress]
+      properties:
+        legalName: { type: string }
+        tradeName: { type: string }
+        ruc: { type: string }
+        fiscalAddress: { type: string }
     CreateComplaint:
       type: object
       required: [kind, goodType, consumerName, idDocType, idDocNumber, address, email, description, detail, request]
@@ -3402,6 +3513,10 @@ components:
         maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100, default: 10, description: Bloqueos de cupo vigentes (sin reserva) que admite una salida a la vez; pasado el tope `createHold` responde 429. }
         operatorRefundLimitCents: { type: integer, minimum: 0, default: 20000, description: Tope de reembolso de un operador sin `payments:refund-any`. }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60, default: 15, description: Días hábiles para responder un reclamo (a confirmar con el abogado). }
+        availabilityMonths: { type: integer, minimum: 1, maximum: 12, default: 3, description: Meses que muestra el calendario de la web (incluye el mes en curso). }
+        adultsMin: { type: integer, minimum: 1, maximum: 20, default: 1, description: Mínimo de adultos de una reserva web. }
+        childrenMin: { type: integer, minimum: 0, maximum: 20, default: 0, description: Mínimo de niños de una reserva web. }
+        peopleMax: { type: integer, minimum: 1, maximum: 20, default: 12, description: Máximo de personas (adultos más niños) de una reserva web. }
         autoIssueDocuments: { type: boolean, default: true, description: Emitir el comprobante automáticamente al confirmarse un pago (y la nota de crédito al reembolsar). }
         exchangeRateUsdPen: { type: string, example: '3.7500', description: Tipo de cambio SUNAT USD→PEN vigente para comprobantes en USD (si falta se usa EXCHANGE_RATE_FALLBACK). }
         exchangeRates: { type: object, additionalProperties: { type: string }, description: 'Tipos de cambio por fecha, p. ej. {"2026-10-04":"3.7500"}; tiene prioridad sobre `exchangeRateUsdPen`.' }
@@ -3414,6 +3529,10 @@ components:
         maxActiveHoldsPerDeparture: { type: integer, minimum: 1, maximum: 100 }
         operatorRefundLimitCents: { type: integer, minimum: 0 }
         complaintDueDays: { type: integer, minimum: 1, maximum: 60 }
+        availabilityMonths: { type: integer, minimum: 1, maximum: 12 }
+        adultsMin: { type: integer, minimum: 1, maximum: 20 }
+        childrenMin: { type: integer, minimum: 0, maximum: 20 }
+        peopleMax: { type: integer, minimum: 1, maximum: 20 }
       additionalProperties: true
     # ----------------------------------------------------------- Reportes
     Manifest:

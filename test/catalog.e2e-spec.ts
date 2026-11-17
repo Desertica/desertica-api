@@ -10,7 +10,17 @@ const run = Math.random().toString(36).slice(2, 8);
 const slugA = `tour-a-${run}`;
 const slugB = `tour-b-${run}`;
 let cmsTours: CmsTour[] = [
-  { slug: slugA, title: 'Tour A', durationHours: 2 },
+  {
+    slug: slugA,
+    title: 'Tour A',
+    durationHours: 2,
+    format: 'BOTH',
+    languages: ['es', 'en'],
+    meeting: 'Plaza de Ica',
+    meetingPointUrl: 'https://maps.example/ica',
+    latitude: -14.0875,
+    longitude: -75.7626,
+  },
   { slug: slugB, title: 'Tour B', durationHours: null },
 ];
 
@@ -25,9 +35,15 @@ describe('Catálogo (e2e)', () => {
 
   beforeAll(async () => {
     app = await createTestApp((b) =>
-      b
-        .overrideProvider(CmsClient)
-        .useValue({ listTours: () => Promise.resolve(cmsTours) }),
+      b.overrideProvider(CmsClient).useValue({
+        // `meeting` es localizado en el CMS: cada idioma trae su texto.
+        listTours: ({ locale = 'en' }: { locale?: string } = {}) =>
+          Promise.resolve(
+            cmsTours.map((t) =>
+              t.meeting ? { ...t, meeting: `${t.meeting} (${locale})` } : t,
+            ),
+          ),
+      }),
     );
     prisma = app.get(PrismaService);
     admin = await loginAs(app, 'admin');
@@ -39,7 +55,7 @@ describe('Catálogo (e2e)', () => {
 
   let tourA: Body;
 
-  it('syncs tours from the CMS without touching operational settings', async () => {
+  it('syncs titles from the CMS and imports operational data only where it is still empty', async () => {
     const first = await http()
       .post('/api/tour-refs/sync')
       .set(admin.auth)
@@ -61,7 +77,22 @@ describe('Catálogo (e2e)', () => {
     expect(tourA).toMatchObject({
       title: 'Tour A',
       durationHours: 2,
+      format: 'BOTH',
+      languages: ['es', 'en'],
+      meetingPoint: { en: 'Plaza de Ica (en)', es: 'Plaza de Ica (es)' },
+      meetingPointUrl: 'https://maps.example/ica',
+      latitude: -14.0875,
+      longitude: -75.7626,
       active: false,
+    });
+    const tourB = await prisma.tourRef.findUniqueOrThrow({
+      where: { slug: slugB },
+    });
+    expect(tourB).toMatchObject({
+      durationHours: null,
+      format: null,
+      languages: [],
+      meetingPoint: null,
     });
 
     await http()
@@ -72,12 +103,23 @@ describe('Catálogo (e2e)', () => {
         minAge: 12,
         requiresWaiver: false,
         active: true,
+        durationHours: 5,
+        languages: ['es'],
       })
       .expect(200);
 
+    // El CMS cambia todo: solo el título es suyo; lo demás se copia si aquí sigue vacío.
     cmsTours = [
-      { slug: slugA, title: 'Tour A (nuevo título)', durationHours: 3 },
-      cmsTours[1],
+      {
+        ...cmsTours[0],
+        title: 'Tour A (nuevo título)',
+        durationHours: 3,
+        format: 'PRIVATE',
+        languages: ['en', 'fr'],
+        meeting: 'Otro lugar',
+        latitude: 1,
+      },
+      { ...cmsTours[1], durationHours: 6, format: 'SHARED' },
     ];
     const second = await http()
       .post('/api/tour-refs/sync')
@@ -91,11 +133,18 @@ describe('Catálogo (e2e)', () => {
       .expect(200);
     expect(after.body).toMatchObject({
       title: 'Tour A (nuevo título)',
-      durationHours: 3,
+      durationHours: 5,
+      format: 'BOTH',
+      languages: ['es'],
+      meetingPoint: { en: 'Plaza de Ica (en)', es: 'Plaza de Ica (es)' },
+      latitude: -14.0875,
       defaultCapacity: 8,
       minAge: 12,
       requiresWaiver: false,
     });
+    expect(
+      await prisma.tourRef.findUniqueOrThrow({ where: { slug: slugB } }),
+    ).toMatchObject({ durationHours: 6, format: 'SHARED', languages: [] });
   });
 
   it('deactivates tours that are no longer published, and never on an empty CMS', async () => {
@@ -110,7 +159,7 @@ describe('Catálogo (e2e)', () => {
       (await http().get(`/api/tour-refs/${tourA.id}`).set(admin.auth)).body,
     ).toMatchObject({ active: true });
 
-    cmsTours = [{ slug: slugB, title: 'Tour B', durationHours: null }];
+    cmsTours = [{ slug: slugB, title: 'Tour B' }];
     const res = await http()
       .post('/api/tour-refs/sync')
       .set(admin.auth)
@@ -141,6 +190,88 @@ describe('Catálogo (e2e)', () => {
       .send({ active: true })
       .expect(403);
     await http().get('/api/tour-refs').set(operator.auth).expect(200);
+  });
+
+  it('edits the operational data of a tour and validates it', async () => {
+    const patch = (body: Body) =>
+      http().patch(`/api/tour-refs/${tourA.id}`).set(admin.auth).send(body);
+    const res = await patch({
+      durationHours: 4,
+      format: 'PRIVATE',
+      languages: ['es', 'en', 'pt'],
+      meetingPoint: { en: 'Main square', es: 'Plaza de Armas' },
+      meetingPointUrl: 'https://maps.example/plaza',
+      latitude: -14.06,
+      longitude: -75.73,
+      minHeightCm: 110,
+    }).expect(200);
+    expect(res.body).toMatchObject({
+      durationHours: 4,
+      format: 'PRIVATE',
+      languages: ['es', 'en', 'pt'],
+      meetingPoint: { en: 'Main square', es: 'Plaza de Armas' },
+      meetingPointUrl: 'https://maps.example/plaza',
+      latitude: -14.06,
+      longitude: -75.73,
+    });
+
+    for (const bad of [
+      { durationHours: 0 },
+      { durationHours: 241 },
+      { format: 'GROUP' },
+      { languages: ['ES'] },
+      { languages: ['spa'] },
+      { languages: Array.from({ length: 11 }, () => 'es') },
+      { meetingPoint: { fr: 'Place' } },
+      { meetingPoint: { en: 'x'.repeat(2001) } },
+      { meetingPoint: 'Plaza' },
+      { meetingPointUrl: 'ftp://maps.example/plaza' },
+      { meetingPointUrl: `https://maps.example/${'x'.repeat(500)}` },
+      { latitude: 90.1 },
+      { longitude: -181 },
+    ]) {
+      await patch(bad).expect(422);
+    }
+
+    // La web lee estos datos de los tours activos; lo editorial sigue en el CMS.
+    const tours = () =>
+      http()
+        .get('/api/public/tours')
+        .expect(200)
+        .then((r) => (r.body as { data: Body[] }).data);
+    expect((await tours()).find((t) => t.slug === slugA)).toEqual({
+      slug: slugA,
+      durationHours: 4,
+      format: 'PRIVATE',
+      languages: ['es', 'en', 'pt'],
+      meetingPoint: { en: 'Main square', es: 'Plaza de Armas' },
+      meetingPointUrl: 'https://maps.example/plaza',
+      latitude: -14.06,
+      longitude: -75.73,
+      minAge: 12,
+      minHeightCm: 110,
+    });
+    expect((await tours()).some((t) => t.slug === slugB)).toBe(false); // inactivo
+
+    // Con `null` (o una lista vacía) el dato vuelve a quedar sin definir.
+    const cleared = await patch({
+      durationHours: null,
+      format: null,
+      languages: [],
+      meetingPoint: null,
+      meetingPointUrl: null,
+      latitude: null,
+      longitude: null,
+    }).expect(200);
+    expect(cleared.body).toMatchObject({
+      durationHours: null,
+      format: null,
+      languages: [],
+      meetingPoint: null,
+      meetingPointUrl: null,
+      latitude: null,
+      longitude: null,
+    });
   });
 
   describe('cancellation policies', () => {
@@ -351,7 +482,17 @@ describe('Catálogo (e2e)', () => {
     const month = '2031-03';
     let departure: Body;
 
+    // Estas pruebas usan fechas fijas de 2031: se abre el horizonte del calendario escribiendo
+    // el ajuste directo en la base (por el API el máximo es 12 meses).
+    afterAll(() =>
+      prisma.setting.deleteMany({ where: { key: 'availabilityMonths' } }),
+    );
     beforeAll(async () => {
+      await prisma.setting.upsert({
+        where: { key: 'availabilityMonths' },
+        update: { value: 1200 },
+        create: { key: 'availabilityMonths', value: 1200 },
+      });
       for (const currency of ['USD', 'PEN']) {
         await http()
           .post('/api/price-rules')

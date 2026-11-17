@@ -17,6 +17,14 @@ export const SETTING_DEFINITIONS = {
   operatorRefundLimitCents: { default: 20000, min: 0, max: 100_000_000 },
   /** Días hábiles de plazo para responder un reclamo (a confirmar con el abogado). */
   complaintDueDays: { default: 15, min: 1, max: 60 },
+  /** Meses que muestra el calendario de la web, contando el mes en curso (hora de Lima). */
+  availabilityMonths: { default: 3, min: 1, max: 12 },
+  /** Mínimo de adultos de una reserva web. */
+  adultsMin: { default: 1, min: 1, max: 20 },
+  /** Mínimo de niños de una reserva web (normalmente 0). */
+  childrenMin: { default: 0, min: 0, max: 20 },
+  /** Máximo de personas (adultos más niños) de una reserva web. */
+  peopleMax: { default: 12, min: 1, max: 20 },
 } as const;
 
 const KEY_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
@@ -49,6 +57,56 @@ export class SettingsService {
     return typeof row?.value === 'number'
       ? row.value
       : SETTING_DEFINITIONS[key].default;
+  }
+
+  /** Reglas de reserva de la web; el staff no está sujeto a ellas en las reservas manuales. */
+  async bookingRules() {
+    const keys = [
+      'depositPercent',
+      'availabilityMonths',
+      'adultsMin',
+      'childrenMin',
+      'peopleMax',
+    ] as const;
+    const rows = await this.prisma.setting.findMany({
+      where: { key: { in: [...keys] } },
+    });
+    const rules = {} as Record<(typeof keys)[number], number>;
+    for (const key of keys) {
+      const value = rows.find((r) => r.key === key)?.value;
+      rules[key] =
+        typeof value === 'number' ? value : SETTING_DEFINITIONS[key].default;
+    }
+    return rules;
+  }
+
+  /** 422 si el grupo no cumple las reglas de reserva de la web. Sin `adults` solo se revisa el total. */
+  async assertPartySize(party: {
+    adults?: number;
+    children?: number;
+    people: number;
+  }): Promise<void> {
+    const rules = await this.bookingRules();
+    if (party.adults !== undefined && party.adults < rules.adultsMin) {
+      throw new UnprocessableEntityException(
+        `A booking needs at least ${rules.adultsMin} adult(s)`,
+      );
+    }
+    if (party.children !== undefined && party.children < rules.childrenMin) {
+      throw new UnprocessableEntityException(
+        `A booking needs at least ${rules.childrenMin} child(ren)`,
+      );
+    }
+    if (party.people < rules.adultsMin + rules.childrenMin) {
+      throw new UnprocessableEntityException(
+        `A booking needs at least ${rules.adultsMin + rules.childrenMin} people`,
+      );
+    }
+    if (party.people > rules.peopleMax) {
+      throw new UnprocessableEntityException(
+        `A booking admits at most ${rules.peopleMax} people`,
+      );
+    }
   }
 
   /** Guarda las claves enviadas; las numéricas conocidas se validan por rango. */

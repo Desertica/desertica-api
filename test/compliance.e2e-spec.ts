@@ -13,6 +13,7 @@ import {
   rand,
 } from './fixtures';
 import { createTestApp, loginAs, TestSession } from './helpers';
+import { ensureBilling } from './payment-helpers';
 
 type Body = Record<string, any>;
 // Los textos legales son inmutables y no se pueden borrar: cada corrida usa idiomas propios.
@@ -1021,6 +1022,19 @@ describe('Cumplimiento (e2e)', () => {
         .post('/api/public/consents')
         .send({ anonymousId, categories: 'all', policyVersion: 1 })
         .expect(422);
+    });
+  });
+
+  describe('public company', () => {
+    it('serves the fiscal identity of the active company and nothing internal', async () => {
+      const company = await ensureBilling(app);
+      const res = await http().get('/api/public/company').expect(200);
+      expect(res.body).toEqual({
+        legalName: company.legalName,
+        ...(company.tradeName ? { tradeName: company.tradeName } : {}),
+        ruc: company.ruc,
+        fiscalAddress: company.fiscalAddress,
+      });
     });
   });
 

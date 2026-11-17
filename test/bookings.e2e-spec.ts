@@ -2,7 +2,7 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { BackgroundQueue } from '../src/common/queue/background-queue';
-import { limaDate } from '../src/common/time/lima';
+import { addMonths, limaDate, limaMonthRange } from '../src/common/time/lima';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
@@ -2311,6 +2311,106 @@ describe('Reservas (e2e)', () => {
         expect((c.body as Body).bookings[0].tourTitle).toBe(title);
         expect(body.booking.reference).toBe((b.body as Body).reference);
       });
+    });
+  });
+
+  // ------------------------------------------------- Reglas de reserva
+  describe('booking rules', () => {
+    let fx: CatalogFixture;
+    const defaults = {
+      availabilityMonths: 3,
+      adultsMin: 1,
+      childrenMin: 0,
+      peopleMax: 12,
+    };
+    const save = (body: Body) =>
+      http().put('/api/settings').set(admin.auth).send(body).expect(200);
+    beforeAll(async () => {
+      fx = await createCatalog(app);
+    });
+    afterAll(() => save(defaults));
+
+    it('publishes the rules the backoffice sets', async () => {
+      await save(defaults);
+      const res = await http().get('/api/public/booking-rules').expect(200);
+      expect(res.body).toEqual({
+        ...defaults,
+        depositPercent: (res.body as Body).depositPercent as number,
+      });
+      await save({ adultsMin: 2, peopleMax: 4 });
+      const after = await http().get('/api/public/booking-rules').expect(200);
+      expect(after.body).toMatchObject({ adultsMin: 2, peopleMax: 4 });
+      for (const bad of [
+        { availabilityMonths: 13 },
+        { adultsMin: 0 },
+        { childrenMin: -1 },
+        { peopleMax: 21 },
+      ]) {
+        await http().put('/api/settings').set(admin.auth).send(bad).expect(422);
+      }
+    });
+
+    it('rejects web quotes, holds and bookings outside the rules, but not manual bookings', async () => {
+      await save({ adultsMin: 2, childrenMin: 0, peopleMax: 4 });
+      const dep = await fx.departure({ capacity: 20 });
+      const quote = (adults: number, children = 0) =>
+        http()
+          .post('/api/public/quotes')
+          .send({ departureId: dep.id, adults, children, currency: 'USD' });
+      await quote(1).expect(422);
+      const tooMany = await quote(2, 3).expect(422);
+      expect((tooMany.body as Body).message).toMatch(/at most 4 people/);
+      await quote(2, 2).expect(200);
+
+      await hold(dep.id, 5).expect(422);
+      await hold(dep.id, 1).expect(422);
+      // 3 asientos caben en las reglas, pero no como 1 adulto y 2 niños.
+      const h = await hold(dep.id, 3).expect(201);
+      await http()
+        .post('/api/public/bookings')
+        .send(bookingBody(h.body.token as string, { adults: 1, children: 2 }))
+        .expect(422);
+      await http()
+        .post('/api/public/bookings')
+        .send(bookingBody(h.body.token as string, { adults: 2, children: 1 }))
+        .expect(201);
+
+      // El staff no está sujeto a las reglas de la web.
+      await http()
+        .post('/api/bookings')
+        .set(operator.auth)
+        .send({
+          departureId: dep.id,
+          currency: 'USD',
+          adults: 1,
+          children: 5,
+          customer: customerInput(),
+          billing: billingBoleta,
+          sendConfirmation: false,
+        })
+        .expect(201);
+      await save(defaults);
+    });
+
+    it('hides departures beyond the calendar horizon', async () => {
+      const thisMonth = limaDate(new Date()).slice(0, 7);
+      // Última hora del mes siguiente y primera del que le sigue (hora de Lima).
+      const edge = limaMonthRange(addMonths(thisMonth, 1)).to.getTime();
+      const inside = await fx.departure({ startsAt: new Date(edge - HOUR) });
+      const outside = await fx.departure({ startsAt: new Date(edge + HOUR) });
+      const ids = async (month: string) => {
+        const res = await http()
+          .get(`/api/public/tours/${fx.tour.slug}/availability`)
+          .query({ month, currency: 'USD' })
+          .expect(200);
+        return (res.body as { data: Body[] }).data.map((d) => d.departureId);
+      };
+
+      await save({ availabilityMonths: 2 });
+      expect(await ids(addMonths(thisMonth, 1))).toContain(inside.id);
+      expect(await ids(addMonths(thisMonth, 2))).toEqual([]);
+      await save({ availabilityMonths: 3 });
+      expect(await ids(addMonths(thisMonth, 2))).toContain(outside.id);
     });
   });
 });
