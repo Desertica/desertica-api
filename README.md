@@ -93,7 +93,7 @@ Las plantillas (`modules/notifications/templates/`) describen cada correo como b
 
 ### Descargos de responsabilidad
 
-El texto vive en el CMS (`tour.waiverBody`). `POST /legal-documents` con `kind: WAIVER` y `tourRefId` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
+El texto se escribe en el backoffice (Configuración). `POST /legal-documents` con `kind: WAIVER`, `tourRefId`, `title` y `text` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
 
 ### IP del cliente y trabajo en segundo plano
 

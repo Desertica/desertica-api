@@ -65,15 +65,6 @@ export interface CmsPage {
   body: string;
 }
 
-/** Descargo de responsabilidad de un tour (`tour.waiverBody`, Markdown, localizado). */
-export interface CmsTourWaiver {
-  slug: string;
-  /** Título del tour en el idioma pedido. */
-  title: string;
-  /** `null` si el tour no define descargo en ese idioma. */
-  waiverBody: string | null;
-}
-
 class CmsHttpError extends Error {
   constructor(readonly status: number) {
     super(`CMS responded ${status}`);
@@ -154,32 +145,6 @@ export class CmsClient {
       slug,
       title: typeof row.title === 'string' ? row.title : slug,
       body: row.body,
-    };
-  }
-
-  /**
-   * Título y descargo de un tour en un idioma; `null` si el tour no existe en
-   * el CMS (o no está publicado) en ese idioma. Siempre fresco: es lo que se
-   * congela como evidencia.
-   */
-  async getTourWaiver(
-    slug: string,
-    locale: string,
-  ): Promise<CmsTourWaiver | null> {
-    const rows = await this.cached(
-      `tour-waiver:${locale}:${slug}`,
-      `/api/tours?locale=${encodeURIComponent(locale)}&filters[slug][$eq]=${encodeURIComponent(slug)}&fields[0]=slug&fields[1]=title&fields[2]=waiverBody`,
-      true,
-    );
-    const row = rows[0];
-    if (!row) return null;
-    return {
-      slug,
-      title: typeof row.title === 'string' ? row.title : slug,
-      waiverBody:
-        typeof row.waiverBody === 'string' && row.waiverBody.trim()
-          ? row.waiverBody
-          : null,
     };
   }
 
