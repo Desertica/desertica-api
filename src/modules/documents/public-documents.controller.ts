@@ -41,7 +41,9 @@ export class PublicDocumentsController {
     @Res({ passthrough: true }) res: Response,
   ) {
     const notFound = new NotFoundException('Document not found');
-    const secret = this.config.get('JWT_ACCESS_SECRET', { infer: true });
+    const secret =
+      this.config.get('LINK_SIGNING_SECRET', { infer: true }) ||
+      this.config.get('JWT_ACCESS_SECRET', { infer: true });
     if (
       !exp ||
       !sig ||

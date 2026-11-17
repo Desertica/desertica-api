@@ -13,12 +13,22 @@ import { NotificationsService } from '../notifications/notifications.service';
 const ADVISORY_KEY = 'desertica:expiry-sweep';
 /** Un pago en curso (3DS, transferencia en validación) frena el vencimiento este tiempo. */
 const IN_FLIGHT_GRACE_MS = 30 * 60_000;
+const DAY_MS = 86_400_000;
+
+/** Misma fecha `months` meses antes (en UTC). */
+function monthsBefore(now: Date, months: number): Date {
+  const d = new Date(now);
+  d.setUTCMonth(d.getUTCMonth() - months);
+  return d;
+}
 
 /**
  * Barrido de vencimientos, basado en la base de datos (sin Redis):
  * - Reservas web sin pagar cuya ventana de pago venció: se cancelan y liberan el cupo.
  * - Bloqueos de cupo vencidos que nunca fueron reserva: se marcan liberados.
  * - Registros de idempotencia de más de 7 días: se borran.
+ * - Una vez al día, los datos personales vencidos según la política de privacidad
+ *   (ver `purgePersonalData`).
  *
  * El conteo de cupo ya ignora los bloqueos vencidos aunque este barrido no
  * corra; el barrido existe para que el estado de la reserva y los reportes
@@ -31,6 +41,7 @@ export class ExpiryService
 {
   private readonly logger = new Logger(ExpiryService.name);
   private timer?: NodeJS.Timeout;
+  private lastPurgeAt = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -108,12 +119,74 @@ export class ExpiryService
     await this.prisma.idempotencyRecord.deleteMany({
       where: { createdAt: { lt: new Date(now.getTime() - 7 * 86_400_000) } },
     });
+    if (now.getTime() - this.lastPurgeAt >= DAY_MS) {
+      await this.purgePersonalData(now);
+      this.lastPurgeAt = now.getTime();
+    }
     if (bookings > 0 || holds.count > 0) {
       this.logger.log(
         `Expired ${bookings} unpaid bookings and ${holds.count} holds`,
       );
     }
     return { bookings, holds: holds.count };
+  }
+
+  /**
+   * Plazos de conservación de la política de privacidad (sección 5):
+   * - Datos de salud del descargo: 12 meses desde el tour, salvo un reclamo en curso de esa reserva.
+   * - Mensajes de contacto: 12 meses desde el último contacto de ese correo.
+   * - Registro de preferencias de cookies: 12 meses.
+   * Además se borran los enlaces de "mi reserva" y los refresh tokens ya vencidos, que no sirven para nada.
+   * Reservas, pagos y comprobantes (5 años o más), reclamos (2 años como mínimo) y constancias de
+   * aceptación no se tocan aquí.
+   */
+  async purgePersonalData(now = new Date()) {
+    const yearAgo = monthsBefore(now, 12);
+    const openComplaints = await this.prisma.complaint.findMany({
+      where: { status: { not: 'ANSWERED' }, bookingRef: { not: null } },
+      select: { bookingRef: true },
+    });
+    const medicalNotes = await this.prisma.waiver.updateMany({
+      where: {
+        medicalNotes: { not: null },
+        booking: {
+          departure: { startsAt: { lt: yearAgo } },
+          reference: {
+            notIn: openComplaints.map((c) =>
+              c.bookingRef!.trim().toUpperCase(),
+            ),
+          },
+        },
+      },
+      data: { medicalNotes: null },
+    });
+    const contactMessages = await this.prisma.$executeRaw`
+      DELETE FROM "ContactMessage" c
+      WHERE c."createdAt" < ${yearAgo}
+        AND NOT EXISTS (
+          SELECT 1 FROM "ContactMessage" n
+          WHERE lower(n."email") = lower(c."email") AND n."createdAt" >= ${yearAgo}
+        )`;
+    const consents = await this.prisma.consentRecord.deleteMany({
+      where: { createdAt: { lt: yearAgo } },
+    });
+    const accessTokens = await this.prisma.bookingAccessToken.deleteMany({
+      where: { expiresAt: { lt: now } },
+    });
+    const refreshTokens = await this.prisma.refreshToken.deleteMany({
+      where: { expiresAt: { lt: now } },
+    });
+    const result = {
+      medicalNotes: medicalNotes.count,
+      contactMessages,
+      consents: consents.count,
+      accessTokens: accessTokens.count,
+      refreshTokens: refreshTokens.count,
+    };
+    if (Object.values(result).some((n) => n > 0)) {
+      this.logger.log(`Retention purge: ${JSON.stringify(result)}`);
+    }
+    return result;
   }
 
   private async expireBooking(id: string, now: Date): Promise<boolean> {

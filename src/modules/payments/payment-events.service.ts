@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import { pendingCents } from '../../common/money';
 import { Prisma } from '../../generated/prisma/client';
@@ -501,7 +502,7 @@ export class PaymentEventsService {
       try {
         await this.bookingPayments.sendConfirmedEmail(fx.confirmedBookingId);
       } catch (error) {
-        this.logger.error(`Confirmation email failed: ${String(error)}`);
+        this.logger.error(`Confirmation email failed: ${describeError(error)}`);
       }
     }
     for (const alert of fx.alerts) {
@@ -514,7 +515,7 @@ export class PaymentEventsService {
       try {
         await this.documents.autoIssueForPayment(fx.settledPaymentId);
       } catch (error) {
-        this.logger.error(`Auto-issue failed: ${String(error)}`);
+        this.logger.error(`Auto-issue failed: ${describeError(error)}`);
       }
     }
   }

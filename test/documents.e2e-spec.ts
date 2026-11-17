@@ -42,6 +42,8 @@ describe('Comprobantes (e2e)', () => {
   let prisma: PrismaService;
   let admin: TestSession;
   let operator: TestSession;
+  /** Operaciones: no anula ni emite notas de crédito. */
+  let ops: TestSession;
   let billing: FakeBillingClient;
   let storage: MemoryDocumentStorage;
   let worker: DocumentWorker;
@@ -67,7 +69,9 @@ describe('Comprobantes (e2e)', () => {
     billing = app.get<FakeBillingClient>(BILLING_CLIENT);
     worker = app.get(DocumentWorker);
     admin = await loginAs(app, 'admin');
-    operator = await loginAs(app, 'operator');
+    // Emitir comprobantes es de Finanzas (Operaciones ya no tiene documents:issue).
+    operator = await loginAs(app, 'finance');
+    ops = await loginAs(app, 'operator');
     fx = await createCatalog(app);
     await ensureBilling(app);
     // Trabajos que dejaron otras pruebas: no son de esta suite y no deben ocupar el barrido.
@@ -596,7 +600,7 @@ describe('Comprobantes (e2e)', () => {
       const { doc } = await accepted();
       await http()
         .post(`/api/documents/${doc.id}/void`)
-        .set(operator.auth)
+        .set(ops.auth)
         .send({ reason: 'x' })
         .expect(403);
       billing.pendingPolls = 1;
@@ -739,7 +743,7 @@ describe('Comprobantes (e2e)', () => {
       const { doc } = await accepted();
       await http()
         .post(`/api/documents/${doc.id}/credit-note`)
-        .set(operator.auth)
+        .set(ops.auth)
         .send({ reason: 'x', amountCents: 100 })
         .expect(403);
       for (const amountCents of [0, -1, 1.5]) {

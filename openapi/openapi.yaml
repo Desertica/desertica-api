@@ -21,14 +21,23 @@ info:
       con un `accessToken` nuevo (el original no se guarda en claro).
     - **Autenticación**: el staff usa `Authorization: Bearer <jwt>` (login con Google). El cliente accede a su
       reserva con `X-Booking-Token`. Los webhooks se validan por firma del proveedor.
-    - **Permisos**: cada operación del staff declara `x-permission`. El rol `admin` tiene todos; `operator`
-      tiene los de reservas, calendario, clientes, pagos (reembolsos hasta un tope), comprobantes y reclamos,
-      y no tiene `users:*`, `company:*`, `settings:*` ni `documents:void`.
+    - **Permisos**: cada operación del staff declara `x-permission`. Hay 4 roles fijos (`listRoles`):
+      `admin` (Administrador, todos), `operator` (Operaciones: reservas, calendario, clientes, pagos manuales,
+      reclamos y descargos; sin reembolsos, comprobantes ni reportes), `finance` (Finanzas: pagos, reembolsos
+      hasta el tope, comprobantes y anulaciones, reportes y bitácora) y `readonly` (Solo lectura, sin datos de
+      clientes, descargos ni reclamos). Un rol sin `reports:read` no ve el tablero ni los reportes.
+    - **Acciones delicadas**: las operaciones que exigen `payments:refund`, `users:write`, `settings:write`,
+      `company:write`, `legal:write`, `customers:erase` o `departures:cancel` piden además un login con Google
+      de hace menos de `REAUTH_MAX_AGE_MINUTES` (10 por defecto). Si no, responden `403` con
+      `details.reason = "reauth_required"` (y `details.maxAgeMinutes`): el panel pide volver a entrar y reintenta.
+      Renovar el token con `/auth/refresh` no cuenta como login.
     - **Contenido editorial** (títulos, textos, medios) no pasa por este API: lo sirve el CMS.
 
     ## Sesión del staff
     `POST /auth/google` devuelve el token de acceso en el cuerpo y fija el refresh token en la cookie
-    `desertica_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/auth`). El backoffice y el API deben
+    `desertica_refresh` (`HttpOnly; Secure; SameSite=Strict; Path=/api/auth`). La sesión dura como máximo
+    `SESSION_MAX_HOURS` (12 por defecto) desde el login con Google (`sessionExpiresAt`); rotar el refresh no
+    la alarga. Los logins rechazados y los cierres de sesión quedan en la bitácora. El backoffice y el API deben
     estar en el mismo sitio (subdominios del mismo dominio) y el API acepta CORS con credenciales solo desde
     los orígenes configurados. El refresh rota en cada uso y reutilizar uno viejo revoca todas las sesiones.
     Como `SameSite=Strict` deja pasar a los subdominios del mismo sitio, `/auth/refresh` y `/auth/logout`
@@ -503,6 +512,10 @@ paths:
       operationId: signWaiver
       tags: [Public]
       summary: Firmar el descargo de responsabilidad
+      description: |
+        `409` si la reserva está cancelada, si ya se firmó o si pasaron más de 2 días desde el inicio del
+        tour. `404` si el enlace no existe o el cliente pidió que se borraran sus datos. Las notas médicas se
+        guardan cifradas.
       security: []
       parameters:
         - $ref: '#/components/parameters/LinkToken'
@@ -528,6 +541,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/WaiverForm' }
+        '404': { $ref: '#/components/responses/Error' }
         '409': { $ref: '#/components/responses/Error' }
   /public/complaints:
     post:
@@ -717,6 +731,9 @@ paths:
       operationId: loginWithGoogle
       tags: [Auth]
       summary: Iniciar sesión con Google (solo dominio de la empresa)
+      description: |
+        Exige un correo verificado del dominio de la empresa que sea una cuenta de su Google Workspace (`hd`):
+        una cuenta personal de Google creada con una dirección de la empresa responde 403.
       security: []
       requestBody:
         required: true
@@ -1320,6 +1337,7 @@ paths:
       description: |
         Calcula el reembolso con la política de cancelación vigente al reservar. Con `refund = POLICY`
         devuelve lo que corresponde; con `FULL` o `NONE` fuerza el monto (requiere `bookings:override`).
+        Anula los enlaces de "mi reserva" ya enviados; el cliente puede pedir uno nuevo.
       x-permission: bookings:cancel
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1341,6 +1359,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Booking' }
         '409': { $ref: '#/components/responses/Error' }
+  /bookings/{id}/access-links/revoke:
+    post:
+      operationId: revokeBookingAccessLinks
+      tags: [Bookings]
+      summary: Anular los enlaces de "mi reserva"
+      description: |
+        Invalida todos los enlaces de "mi reserva" enviados al cliente (p. ej. si reenvió el correo a otra
+        persona). El cliente puede pedir uno nuevo a su correo con `requestBookingAccess`. Los enlaces
+        también se anulan solos al cancelar la reserva, al cambiar el correo del cliente y al pedir uno nuevo.
+      x-permission: bookings:write
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Enlaces anulados
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revoked]
+                properties:
+                  revoked: { type: integer, minimum: 0, description: Cuántos enlaces vigentes se anularon. }
+        '404': { $ref: '#/components/responses/Error' }
   /bookings/{id}/reschedule:
     post:
       operationId: rescheduleBooking
@@ -1437,7 +1478,9 @@ paths:
       operationId: recordManualPayment
       tags: [Payments]
       summary: Registrar un pago manual
-      description: Efectivo, transferencia o Yape personal. No pasa por pasarela.
+      description: |
+        Efectivo, transferencia o Yape personal. No pasa por pasarela. Para `TRANSFER` y `YAPE` el número de
+        operación (`reference`) es obligatorio (422 si falta): Finanzas lo cruza con el banco.
       x-permission: payments:write
       parameters:
         - $ref: '#/components/parameters/Id'
@@ -1456,8 +1499,14 @@ paths:
                 kind: { $ref: '#/components/schemas/PaymentKind' }
                 amountCents: { type: integer, minimum: 1 }
                 currency: { $ref: '#/components/schemas/Currency' }
-                reference: { type: string, description: Número de operación o nota. }
+                reference: { type: string, maxLength: 120, description: Número de operación o nota. }
                 paidAt: { type: string, format: date-time }
+              if:
+                required: [method]
+                properties: { method: { enum: [TRANSFER, YAPE] } }
+              then:
+                required: [reference]
+                properties: { reference: { minLength: 1, pattern: '\S' } }
       responses:
         '404': { $ref: '#/components/responses/Error' }
         '201':
@@ -3394,10 +3443,14 @@ components:
     # ------------------------------------------------------------- Admin
     Session:
       type: object
-      required: [accessToken, expiresIn, user]
+      required: [accessToken, expiresIn, sessionExpiresAt, user]
       properties:
         accessToken: { type: string }
         expiresIn: { type: integer, description: Segundos de vigencia del token de acceso. }
+        sessionExpiresAt:
+          type: string
+          format: date-time
+          description: Fin absoluto de la sesión; después hay que volver a entrar con Google.
         user: { $ref: '#/components/schemas/User' }
     Role:
       type: object
@@ -3552,7 +3605,9 @@ components:
               phone: { type: [string, 'null'] }
               emergencyContactName: { type: [string, 'null'] }
               emergencyContactPhone: { type: [string, 'null'] }
-              medicalNotes: { type: [string, 'null'] }
+              medicalNotes:
+                type: [string, 'null']
+                description: Notas médicas del descargo. Siempre `null` si quien consulta no tiene `waivers:read`.
               waiverStatus: { $ref: '#/components/schemas/WaiverStatus' }
               balanceDueCents: { type: integer, description: Saldo por cobrar el día de la salida. }
               currency: { $ref: '#/components/schemas/Currency' }

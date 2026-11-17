@@ -169,6 +169,9 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
 | `LOG_LEVEL` | Nivel de log (pino, JSON en producción) |
 | `JWT_ACCESS_SECRET`, `GOOGLE_CLIENT_ID`, `ALLOWED_EMAIL_DOMAIN` | Auth del staff |
+| `SESSION_MAX_HOURS`, `REAUTH_MAX_AGE_MINUTES` | Duración máxima de la sesión del staff desde el login (12 h) y antigüedad máxima del login para las acciones delicadas (10 min) |
+| `DATA_ENCRYPTION_KEY` | Clave AES-256-GCM (32 bytes en base64) de las notas médicas cifradas; obligatoria en producción |
+| `LINK_SIGNING_SECRET` | Opcional. Secreto de los enlaces firmados de los PDF; sin él se deriva de `JWT_ACCESS_SECRET` |
 | `CMS_URL`, `CMS_API_TOKEN`, `CMS_CACHE_TTL_SECONDS` | Cliente del CMS |
 
 ## Docker

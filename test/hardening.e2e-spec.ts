@@ -30,6 +30,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
   let prisma: PrismaService;
   let admin: TestSession;
   let operator: TestSession;
+  let finance: TestSession;
   let stripe: FakeGateway;
   let culqi: FakeGateway;
   let fx: CatalogFixture;
@@ -57,6 +58,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     culqi = registry.get('CULQI') as FakeGateway;
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
+    finance = await loginAs(app, 'finance');
     fx = await createCatalog(app);
     await ensureBilling(app);
   });
@@ -229,7 +231,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
         Array.from({ length: 4 }, () =>
           http()
             .post(`/api/payments/${p.id}/refunds`)
-            .set(operator.auth)
+            .set(finance.auth)
             .send({ amountCents: 12000, reason: 'x' }),
         ),
       );

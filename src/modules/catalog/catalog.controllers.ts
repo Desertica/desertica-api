@@ -120,8 +120,11 @@ export class DeparturesController {
 
   @Get(':id/manifest')
   @RequirePermission('departures:read')
-  getManifest(@Param('id', UuidPipe) id: string) {
-    return this.manifest.forDeparture(id);
+  getManifest(
+    @Param('id', UuidPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.manifest.forDeparture(id, user.permissions.has('waivers:read'));
   }
 }
 

@@ -125,3 +125,11 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] Instalar PHP 8.3, Composer, Redis y Postgres en el script de configuración del entorno.
 - [ ] Guardar las claves de prueba como secretos del entorno. El certificado digital y la clave SOL reales no van a cloud.
 - [x] Crear los repos `desertica-backoffice` y `desertica-billing` y añadirlos a las sesiones.
+
+## Seguridad (auditoría del 17-11-2026)
+
+- [ ] **Reembolsos con la transacción abierta** (A10): el reembolso llama a Stripe o Culqi con una transacción de la base abierta. No hay riesgo de pagar dos veces, pero varios reembolsos lentos a la vez pueden agotar el pool. Arreglo: reclamar el reembolso con un UPDATE condicional (estado nuevo `PROCESSING` o columna `claimedAt`) y llamar a la pasarela fuera, como `claimCharge`. No se hizo porque cambia los estados del reembolso.
+- [ ] **Firma del webhook de Culqi** (A5): probarla con una clave de prueba antes de lanzar. Ya se rechaza un reembolso externo mayor que lo que queda por devolver; falta reconsultar el cargo a Culqi en los avisos de reembolso.
+- [ ] **Documentos de identidad sin cifrar** (A1): se buscan por coincidencia parcial (`contains`) en clientes y se comparan con la lista de bloqueados; cifrarlos rompe ambas cosas. Haría falta un índice ciego (HMAC) y búsqueda exacta.
+- [ ] **Retención de reservas** (A2): la política dice 5 años "o el plazo de prescripción tributaria, el que sea mayor"; anonimizar reservas viejas espera a que el contador fije ese plazo. Tampoco se borran eventos de webhook, avisos enviados ni la bitácora (la política no les da plazo).
+- [ ] **Pagos manuales** (A7): Finanzas revisa cada semana los pagos `MANUAL` contra el banco y la caja (proceso).
