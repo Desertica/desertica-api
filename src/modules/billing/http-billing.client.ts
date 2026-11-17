@@ -21,6 +21,8 @@ interface ErrorBody {
   retryable?: boolean;
 }
 
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+
 /** Implementación HTTP de `BillingClient` sobre `openapi/billing.yaml`. */
 export class HttpBillingClient implements BillingClient {
   constructor(
@@ -48,8 +50,17 @@ export class HttpBillingClient implements BillingClient {
     );
     if (response.status === 404) return null;
     if (!response.ok) throw await this.toError(response);
+    // Un XML, CDR o PDF de un comprobante pesa kilobytes: algo mucho mayor es una falla de billing.
+    const tooLarge = () =>
+      new BillingError('Billing file too large', 'FILE_TOO_LARGE', 502, false);
+    if (Number(response.headers.get('content-length')) > MAX_FILE_BYTES) {
+      await response.body?.cancel();
+      throw tooLarge();
+    }
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.length > MAX_FILE_BYTES) throw tooLarge();
     return {
-      data: Buffer.from(await response.arrayBuffer()),
+      data,
       contentType:
         response.headers.get('content-type') ?? 'application/octet-stream',
     };

@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import {
   BadGatewayException,
   ConflictException,
@@ -435,7 +436,9 @@ export class PaymentsService {
       error instanceof GatewayNotConfiguredError
         ? 'gateway_not_configured'
         : 'gateway_error';
-    this.logger.error(`Payment ${paymentId} not started: ${String(error)}`);
+    this.logger.error(
+      `Payment ${paymentId} not started: ${describeError(error)}`,
+    );
     await this.prisma.payment
       .updateMany({
         where: { id: paymentId, status: 'PENDING', providerRef: null },

@@ -1,4 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { decryptField } from '../../common/crypto/field-crypto';
+import { EnvVars } from '../../config/env.validation';
 import { pendingCents } from '../../common/money';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TourTitlesService } from '../cms/tour-titles.service';
@@ -11,14 +14,17 @@ export class ManifestService {
     private readonly prisma: PrismaService,
     private readonly seats: SeatsService,
     private readonly titles: TourTitlesService,
+    private readonly config: ConfigService<EnvVars, true>,
   ) {}
 
   /**
    * Pasajeros de la salida. Una fila por pasajero registrado; si la reserva no
    * registró pasajeros, una fila con el titular. El saldo por cobrar va solo
-   * en la primera fila de cada reserva para no contarlo dos veces.
+   * en la primera fila de cada reserva para no contarlo dos veces. Las notas
+   * médicas (dato sensible) solo salen con `waivers:read`.
    */
-  async forDeparture(id: string) {
+  async forDeparture(id: string, withMedicalNotes = false) {
+    const key = this.config.get('DATA_ENCRYPTION_KEY', { infer: true });
     const departure = await this.prisma.departure.findUnique({
       where: { id },
       include: { tourRef: true },
@@ -81,7 +87,10 @@ export class ManifestService {
         phone: b.customer.phone,
         emergencyContactName: row.emergencyContactName,
         emergencyContactPhone: row.emergencyContactPhone,
-        medicalNotes: row.waiver?.medicalNotes ?? null,
+        medicalNotes:
+          withMedicalNotes && row.waiver?.medicalNotes
+            ? decryptField(key, row.waiver.medicalNotes)
+            : null,
         waiverStatus: row.waiver ? ('SIGNED' as const) : ('PENDING' as const),
         balanceDueCents: index === 0 ? balance : 0,
         currency: b.currency,

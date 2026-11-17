@@ -26,13 +26,8 @@ export class PrismaExceptionFilter implements ExceptionFilter {
     exception: Prisma.PrismaClientKnownRequestError,
   ): HttpException {
     if (exception.code === 'P2002') {
-      const targetMeta = exception.meta?.target;
-      const target = Array.isArray(targetMeta)
-        ? targetMeta.join(', ')
-        : typeof targetMeta === 'string'
-          ? targetMeta
-          : 'field';
-      return new ConflictException(`Unique constraint failed on ${target}`);
+      // Mensaje fijo: no revela nombres de campos ni de índices de la base.
+      return new ConflictException('The resource already exists');
     }
     if (exception.code === 'P2025') {
       return new NotFoundException('Record not found');

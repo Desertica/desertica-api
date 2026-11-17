@@ -142,6 +142,9 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `NODE_ENV` | `production` | **También en staging**: ver el recuadro de abajo. |
 | `DATABASE_URL` | obligatoria | `postgresql://…@<host interno>:5432/desertica_api` |
 | `JWT_ACCESS_SECRET` | obligatoria, secreto | Cadena larga aleatoria, distinta por entorno. |
+| `DATA_ENCRYPTION_KEY` | obligatoria, secreto | `openssl rand -base64 32`, distinta por entorno. Cifra las notas médicas: guárdala también fuera de Coolify; si se pierde, esas notas no se pueden leer. No se cambia sin recifrar. |
+| `LINK_SIGNING_SECRET` | recomendada, secreto | Cadena aleatoria de 32+ caracteres para los enlaces de los PDF. Sin ella se deriva de `JWT_ACCESS_SECRET`. |
+| `SESSION_MAX_HOURS`, `REAUTH_MAX_AGE_MINUTES` | opcionales | Por defecto 12 h de sesión y 10 min para las acciones delicadas. |
 | `GOOGLE_CLIENT_ID` | obligatoria | Login del backoffice. |
 | `ALLOWED_EMAIL_DOMAIN` | por defecto `desertica.pe` | Dominio de Google Workspace de la empresa. |
 | `CORS_ORIGINS` | obligatoria | Origen del backoffice (`https://admin.<dominio>`). Lista separada por comas. |

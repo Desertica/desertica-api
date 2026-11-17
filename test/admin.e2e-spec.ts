@@ -33,6 +33,7 @@ describe('Administración (e2e)', () => {
   let mailer: LogMailer;
   let admin: TestSession;
   let operator: TestSession;
+  let finance: TestSession;
   let legalIds: string[];
   let fx: CatalogFixture;
   const http = () => request(app.getHttpServer());
@@ -44,6 +45,7 @@ describe('Administración (e2e)', () => {
     mailer = app.get<LogMailer>(MAILER);
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
+    finance = await loginAs(app, 'finance');
     legalIds = await publishLegal(app, admin, LOCALE);
     fx = await createCatalog(app);
   });
@@ -399,7 +401,7 @@ describe('Administración (e2e)', () => {
             await http()
               .get('/api/reports/sales')
               .query({ from, to, groupBy })
-              .set(operator.auth)
+              .set(finance.auth)
               .expect(200)
           ).body as { data: Body[] }
         ).data;
@@ -438,7 +440,7 @@ describe('Administración (e2e)', () => {
       const dash = await http()
         .get('/api/dashboard/summary')
         .query({ from: prev, to: day })
-        .set(operator.auth)
+        .set(finance.auth)
         .expect(200);
       expect((dash.body as Body).sales).toEqual([
         { currency: 'PEN', grossCents: 72000, refundedCents: 0, bookings: 1 },
@@ -720,10 +722,11 @@ describe('Administración (e2e)', () => {
           request: 'r',
         })
         .expect(201);
+      // Al cancelar ya se anuló el enlace de "mi reserva".
       await http()
         .get(`/api/public/bookings/${b.reference}`)
         .set('X-Booking-Token', b.token)
-        .expect(200);
+        .expect(401);
 
       await erase().expect(204);
 

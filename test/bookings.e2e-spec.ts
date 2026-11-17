@@ -3,6 +3,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { BackgroundQueue } from '../src/common/queue/background-queue';
 import { addMonths, limaDate, limaMonthRange } from '../src/common/time/lima';
+import { BookingAccessService } from '../src/modules/bookings/booking-access.service';
 import { ExpiryService } from '../src/modules/bookings/expiry.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
@@ -426,7 +427,7 @@ describe('Reservas (e2e)', () => {
       ).toBe(a.id);
       await http()
         .post(`/api/bookings/${id}/reschedule`)
-        .set(operator.auth)
+        .set(admin.auth)
         .send({ targetDepartureId: cheap.id })
         .expect(200);
       await prisma.priceRule.update({
@@ -756,6 +757,72 @@ describe('Reservas (e2e)', () => {
         .get(`/api/public/bookings/${a.reference}`)
         .set('X-Booking-Token', token)
         .expect(200);
+      // Solo vale el último enlace enviado.
+      await http()
+        .get(`/api/public/bookings/${a.reference}`)
+        .set('X-Booking-Token', a.token)
+        .expect(401);
+    });
+
+    it('caps a new link at 90 days even for a tour a year away', async () => {
+      const dep = await fx.departure({ startsAt: inHours(24 * 365) });
+      const a = await webBooking(dep.id);
+      const row = await prisma.bookingAccessToken.findFirstOrThrow({
+        where: { bookingId: a.id },
+      });
+      const days = (row.expiresAt.getTime() - Date.now()) / 86_400_000;
+      expect(days).toBeGreaterThan(89);
+      expect(days).toBeLessThanOrEqual(90);
+    });
+
+    it('lets staff revoke the links and revokes them when the customer email changes', async () => {
+      const dep = await fx.departure();
+      const a = await webBooking(dep.id);
+      const view = (token: string) =>
+        http()
+          .get(`/api/public/bookings/${a.reference}`)
+          .set('X-Booking-Token', token);
+      await view(a.token).expect(200);
+      const res = await http()
+        .post(`/api/bookings/${a.id}/access-links/revoke`)
+        .set(operator.auth)
+        .expect(200);
+      expect(res.body).toEqual({ revoked: 1 });
+      await view(a.token).expect(401);
+      expect(
+        await prisma.auditLog.count({
+          where: { action: 'booking.access_revoke', entityId: a.id },
+        }),
+      ).toBe(1);
+      await http()
+        .post(`/api/bookings/${a.id}/access-links/revoke`)
+        .set(operator.auth)
+        .expect(200, { revoked: 0 });
+      await http()
+        .post(
+          `/api/bookings/00000000-0000-4000-8000-000000000000/access-links/revoke`,
+        )
+        .set(operator.auth)
+        .expect(404);
+
+      // Cambiar el correo del cliente anula los enlaces enviados al anterior.
+      const access = app.get(BookingAccessService);
+      const fresh = await access.issue(prisma, a.id, dep.startsAt);
+      await view(fresh).expect(200);
+      const booking = await prisma.booking.findUniqueOrThrow({
+        where: { id: a.id },
+        include: { customer: true },
+      });
+      const c = booking.customer;
+      const update = (email: string) =>
+        http()
+          .patch(`/api/customers/${c.id}`)
+          .set(operator.auth)
+          .send({ email, firstName: c.firstName, lastName: c.lastName });
+      await update(c.email).expect(200);
+      await view(fresh).expect(200); // mismo correo: no cambia nada
+      await update(`otro-${rand()}@example.com`).expect(200);
+      await view(fresh).expect(401);
     });
 
     it('limits access emails per address without revealing it', async () => {
@@ -994,6 +1061,7 @@ describe('Reservas (e2e)', () => {
         kind: 'BALANCE',
         amountCents: 14000,
         currency: 'USD',
+        reference: `OP-${rand()}`,
       }).expect(201);
 
       const view = await http()
@@ -1020,6 +1088,30 @@ describe('Reservas (e2e)', () => {
         },
       });
       expect(audits).toHaveLength(3);
+    });
+
+    it('requires the operation number for transfers and Yape, not for cash', async () => {
+      const dep = await fx.departure();
+      const { id } = await webBooking(dep.id);
+      const url = `/api/bookings/${id}/payments/manual`;
+      const base = { kind: 'FULL', amountCents: 5000, currency: 'USD' };
+      for (const method of ['TRANSFER', 'YAPE']) {
+        await http()
+          .post(url)
+          .set(operator.auth)
+          .send({ ...base, method })
+          .expect(422);
+        await http()
+          .post(url)
+          .set(operator.auth)
+          .send({ ...base, method, reference: '   ' })
+          .expect(422);
+      }
+      await http()
+        .post(url)
+        .set(operator.auth)
+        .send({ ...base, method: 'CASH' })
+        .expect(201);
     });
 
     it('rejects a duplicated operation number and replays idempotent requests', async () => {
@@ -1409,7 +1501,7 @@ describe('Reservas (e2e)', () => {
         .expect(201);
       const res = await http()
         .post(`/api/bookings/${id}/reschedule`)
-        .set(operator.auth)
+        .set(admin.auth)
         .send({ targetDepartureId: cheap.id })
         .expect(200);
       const body = res.body as Body;
@@ -1897,6 +1989,112 @@ describe('Reservas (e2e)', () => {
       ).toBe('PENDING_PAYMENT');
     });
 
+    it('purges personal data past the privacy policy terms and keeps the rest', async () => {
+      const now = new Date();
+      const monthsAgo = (m: number) => {
+        const d = new Date(now);
+        d.setUTCMonth(d.getUTCMonth() - m);
+        return d;
+      };
+      let offset = 0;
+      const signedOn = async (startsAt: Date) => {
+        const dep = await fx.departure();
+        const b = await webBooking(dep.id);
+        await prisma.departure.update({
+          where: { id: dep.id },
+          // Minutos distintos: dos salidas del mismo tour no comparten hora.
+          data: { startsAt: new Date(startsAt.getTime() + ++offset * 60_000) },
+        });
+        const w = await prisma.waiver.findFirstOrThrow({
+          where: { bookingId: b.id },
+        });
+        await prisma.waiver.update({
+          where: { id: w.id },
+          data: { status: 'SIGNED', medicalNotes: 'enc:v1:x:y:z' },
+        });
+        return { ...b, waiverId: w.id };
+      };
+      const old = await signedOn(monthsAgo(13));
+      const recent = await signedOn(monthsAgo(11));
+      const disputed = await signedOn(monthsAgo(13));
+      await prisma.complaint.create({
+        data: {
+          kind: 'RECLAMO',
+          goodType: 'SERVICE',
+          consumerName: 'X',
+          idDocType: 'DNI',
+          idDocNumber: '12345678',
+          address: 'Ica',
+          email: 'x@example.com',
+          bookingRef: ` ${disputed.reference.toLowerCase()} `,
+          description: 'd',
+          detail: 'd',
+          request: 'r',
+          dueAt: now,
+        },
+      });
+
+      const gone = `viejo-${rand()}@example.com`;
+      const active = `activo-${rand()}@example.com`;
+      const msg = (email: string, createdAt: Date) =>
+        prisma.contactMessage.create({
+          data: { name: 'X', email, message: 'Hola', createdAt },
+        });
+      const oldMsg = await msg(gone, monthsAgo(13));
+      const keptOld = await msg(active, monthsAgo(14));
+      await msg(active.toUpperCase(), monthsAgo(2));
+      const consent = (createdAt: Date) =>
+        prisma.consentRecord.create({
+          data: {
+            anonymousId: `a-${rand()}`,
+            categories: { analytics: true },
+            policyVersion: 1,
+            ip: '1.2.3.4',
+            createdAt,
+          },
+        });
+      const oldConsent = await consent(monthsAgo(13));
+      const newConsent = await consent(monthsAgo(1));
+      const expired = await prisma.bookingAccessToken.create({
+        data: {
+          bookingId: recent.id,
+          tokenHash: `h-${rand()}-${rand()}`,
+          expiresAt: new Date(now.getTime() - 1000),
+        },
+      });
+
+      await expiry.purgePersonalData(now);
+
+      const notes = async (id: string) =>
+        (await prisma.waiver.findUniqueOrThrow({ where: { id } })).medicalNotes;
+      expect(await notes(old.waiverId)).toBeNull();
+      expect(await notes(recent.waiverId)).not.toBeNull();
+      expect(await notes(disputed.waiverId)).not.toBeNull(); // reclamo en curso
+      expect(
+        await prisma.waiver.findUniqueOrThrow({ where: { id: old.waiverId } }),
+      ).toMatchObject({ status: 'SIGNED' }); // la firma se conserva
+      expect(
+        await prisma.contactMessage.findUnique({ where: { id: oldMsg.id } }),
+      ).toBeNull();
+      expect(
+        await prisma.contactMessage.findUnique({ where: { id: keptOld.id } }),
+      ).not.toBeNull(); // el mismo correo escribió hace 2 meses
+      expect(
+        await prisma.consentRecord.findUnique({ where: { id: oldConsent.id } }),
+      ).toBeNull();
+      expect(
+        await prisma.consentRecord.findUnique({ where: { id: newConsent.id } }),
+      ).not.toBeNull();
+      expect(
+        await prisma.bookingAccessToken.findUnique({
+          where: { id: expired.id },
+        }),
+      ).toBeNull();
+      expect(
+        await prisma.booking.findUnique({ where: { id: old.id } }),
+      ).not.toBeNull(); // las reservas se conservan 5 años
+    });
+
     it('two sweeps at once do not double-process', async () => {
       const dep = await fx.departure();
       const b = await webBooking(dep.id);
@@ -2247,9 +2445,17 @@ describe('Reservas (e2e)', () => {
           .set(operator.auth)
           .send({ reason: 'x', refund: 'POLICY' })
           .expect(200);
-        const res = await http()
+        // Cancelar anula el enlace enviado; con uno nuevo ("reenvíame mi enlace") ya no hay cómo pagar.
+        await http()
           .get(`/api/public/bookings/${created.reference}`)
           .set('X-Booking-Token', created.token)
+          .expect(401);
+        const fresh = await app
+          .get(BookingAccessService)
+          .issue(prisma, created.id, dep.startsAt);
+        const res = await http()
+          .get(`/api/public/bookings/${created.reference}`)
+          .set('X-Booking-Token', fresh)
           .expect(200);
         expect((res.body as Body).paymentOptions).toEqual([]);
       });
