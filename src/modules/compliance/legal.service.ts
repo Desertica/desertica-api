@@ -66,13 +66,14 @@ export class LegalService {
   ) {}
 
   /**
-   * Publica una versión nueva: trae el texto del CMS y guarda un snapshot
-   * inmutable (título, texto y hash). La versión siguiente se calcula con un
-   * candado para que dos publicaciones simultáneas no choquen.
+   * Publica una versión nueva: guarda un snapshot inmutable (título, texto y
+   * hash). La versión siguiente se calcula con un candado para que dos
+   * publicaciones simultáneas no choquen.
    *
-   * - Documentos globales: la página `cmsSlug` del CMS; versión por `(kind, locale)`.
-   * - `WAIVER`: el campo `waiverBody` del tour `tourRefId` en ese idioma;
-   *   versión por `(tour, locale)`.
+   * - Documentos globales: `text` del backoffice o, sin él, la página `cmsSlug`
+   *   del CMS (en desuso); versión por `(kind, locale)`.
+   * - `WAIVER`: siempre `title` y `text` del backoffice, para el tour
+   *   `tourRefId`; versión por `(tour, locale)`.
    */
   async publish(
     dto: {
@@ -87,11 +88,9 @@ export class LegalService {
     ip?: string,
   ) {
     const snapshot =
-      dto.text !== undefined
+      dto.text !== undefined || dto.kind === 'WAIVER'
         ? await this.textSnapshot(dto)
-        : dto.kind === 'WAIVER'
-          ? await this.waiverSnapshot(dto)
-          : await this.pageSnapshot(dto);
+        : await this.pageSnapshot(dto);
     const scopeKey = snapshot.tourRefId ?? '';
     const row = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`legal:${dto.kind}:${dto.locale}:${scopeKey}`}))`;
@@ -193,45 +192,6 @@ export class LegalService {
       cmsSlug: dto.cmsSlug,
       title: page.title,
       body: page.body,
-    };
-  }
-
-  private async waiverSnapshot(dto: {
-    locale: string;
-    cmsSlug?: string;
-    tourRefId?: string;
-  }) {
-    if (!dto.tourRefId) {
-      throw new UnprocessableEntityException(
-        'tourRefId is required for a WAIVER',
-      );
-    }
-    if (dto.cmsSlug) {
-      throw new UnprocessableEntityException(
-        'cmsSlug does not apply to a WAIVER: the tour slug is used',
-      );
-    }
-    const tour = await this.prisma.tourRef.findUnique({
-      where: { id: dto.tourRefId },
-      select: { id: true, slug: true },
-    });
-    if (!tour) throw new UnprocessableEntityException('Unknown tourRefId');
-    const cmsTour = await this.cms.getTourWaiver(tour.slug, dto.locale);
-    if (!cmsTour) {
-      throw new UnprocessableEntityException(
-        `The CMS has no tour "${tour.slug}" in "${dto.locale}"`,
-      );
-    }
-    if (!cmsTour.waiverBody) {
-      throw new UnprocessableEntityException(
-        `The CMS tour "${tour.slug}" has no waiver text (waiverBody) in "${dto.locale}"`,
-      );
-    }
-    return {
-      tourRefId: tour.id,
-      cmsSlug: tour.slug,
-      title: cmsTour.title,
-      body: cmsTour.waiverBody,
     };
   }
 

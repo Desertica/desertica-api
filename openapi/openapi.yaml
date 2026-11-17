@@ -2032,15 +2032,14 @@ paths:
       description: |
         Guarda un snapshot inmutable del texto en el idioma `locale` (un trigger de la base impide
         modificarlo o borrarlo). El texto se escribe en el backoffice: con `text` (y `title`) se publica ese
-        texto tal cual y no se consulta el CMS. Sin `text` se toma del CMS como antes (en desuso: se retira
-        cuando la web y el backoffice dejen de usarlo).
-        - Documentos globales (`TERMS`, `PRIVACY`, `CANCELLATION`, `COOKIES`, `CONDUCT`): la página
-          `cmsSlug`; la versión es la siguiente de `(kind, locale)`.
-        - `WAIVER`: el campo `waiverBody` del tour `tourRefId` en ese idioma (no lleva `cmsSlug`); la versión
-          es la siguiente de `(tour, locale)` y la respuesta trae el slug del tour en `cmsSlug`. Los
-          descargos de las reservas nuevas apuntan a la última versión publicada (la del idioma de la reserva
-          o, si no hay, la de `en`); sin ninguna, el tour no se puede reservar (409).
-        Responde 422 si el CMS no tiene esa página, ese tour o su `waiverBody`, y 503 si el CMS no responde.
+        texto tal cual y no se consulta el CMS.
+        - Documentos globales (`TERMS`, `PRIVACY`, `CANCELLATION`, `COOKIES`, `CONDUCT`): la versión es la
+          siguiente de `(kind, locale)`. Sin `text` se toma la página `cmsSlug` del CMS (en desuso: se retira
+          cuando el backoffice deje de usarlo); responde 422 si el CMS no tiene esa página y 503 si no responde.
+        - `WAIVER`: `title` y `text` son obligatorios (el descargo ya no existe en el CMS), junto con
+          `tourRefId`; la versión es la siguiente de `(tour, locale)` y la respuesta trae el slug del tour en
+          `cmsSlug`. Los descargos de las reservas nuevas apuntan a la última versión publicada (la del idioma
+          de la reserva o, si no hay, la de `en`); sin ninguna, el tour no se puede reservar (409).
       x-permission: legal:write
       requestBody:
         required: true
@@ -2052,10 +2051,10 @@ paths:
               properties:
                 kind: { $ref: '#/components/schemas/LegalDocumentKind' }
                 locale: { type: string }
-                cmsSlug: { type: string, description: 'Sin `text`, obligatorio salvo con `WAIVER`. Con `text` es opcional: por defecto el slug de la página legal de ese tipo (`terms`, `privacy`, `cancellation`, `cookies`, `conduct`).' }
+                cmsSlug: { type: string, description: 'Sin `text`, obligatorio (solo documentos globales). Con `text` es opcional: por defecto el slug de la página legal de ese tipo (`terms`, `privacy`, `cancellation`, `cookies`, `conduct`).' }
                 tourRefId: { type: string, format: uuid, description: Obligatorio con `WAIVER` y no admitido con los demás. }
-                title: { type: string, maxLength: 200, description: Obligatorio con `text`. }
-                text: { type: string, maxLength: 100000, description: Texto en Markdown que se publica. Sin él se toma del CMS. }
+                title: { type: string, maxLength: 200, description: Obligatorio con `text` y con `WAIVER`. }
+                text: { type: string, maxLength: 100000, description: 'Texto en Markdown que se publica. Obligatorio con `WAIVER`; en los demás, sin él se toma del CMS.' }
       responses:
         '422': { $ref: '#/components/responses/Error' }
         '503': { $ref: '#/components/responses/Error' }
