@@ -187,6 +187,17 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 
 El certificado digital y la clave SOL **reales** solo existen en el servidor de producción. Nunca se cargan en sesiones cloud ni en Git.
 
+#### Billing en staging (configurado el 2026-11-26)
+
+- App `desertica-billing:staging` (uuid `u0ttcjimnptq2v1g6my8bonu`), mismo proyecto y entorno que las demás, GitHub App `desertica-coolify`, rama `staging`, build pack Dockerfile, puerto 8080, healthcheck `GET /health`.
+- **Sin dominio público** (Coolify pone uno `sslip.io` al crearla: se borró). Alias de red `desertica-billing`, así que el API la alcanza en `http://desertica-billing:8080` por la red `coolify`.
+- Volumen persistente en `/var/lib/billing` (SQLite y archivos).
+- `BILLING_ENV=BETA`, `BILLING_GATEWAY=greenter` (SUNAT beta de verdad), `BILLING_STORAGE_DIR=/var/lib/billing`, `BILLING_SOL_USER`/`BILLING_SOL_PASSWORD` con las credenciales públicas de beta de la guía de Greenter. `BILLING_ISSUER_*` sin definir: en BETA quedan los de prueba (RUC `20000000001`), el único que acepta SUNAT beta con esas credenciales.
+- Certificado: autofirmado de prueba (PEM con clave y certificado, sin contraseña, un año de vigencia), generado con `openssl req -x509` y montado como **archivo** de Coolify en `/run/secrets/billing-beta-cert.pem` (`BILLING_CERT_PATH`). SUNAT beta no verifica la cadena. Para renovarlo, generar otro igual y reemplazar el contenido del archivo en Coolify.
+- `BILLING_SERVICE_TOKEN`: aleatorio de 32 bytes (hex), el mismo en billing y en el API. Solo vive en Coolify.
+- En el API de staging: `BILLING_URL=http://desertica-billing:8080`, `BILLING_SERVICE_TOKEN` y `DOCUMENT_WORKER_SECONDS=15` (el valor por defecto; antes estaba en `0`, worker apagado).
+- Verificado: billing arranca sano (el arranque valida configuración y certificado y el healthcheck de Coolify pasa) y el API arranca sin errores con el worker encendido. **No verificado**: una emisión de punta a punta. Necesita en el backoffice una Empresa activa con sus series (`B001`, `F001`) y una reserva con pago confirmado; el worker solo llama a billing cuando hay trabajos.
+
 ### 5.3 `desertica-web`
 
 | Variable | Notas |
