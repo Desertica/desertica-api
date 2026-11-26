@@ -122,7 +122,7 @@ Usa nombres de un solo nivel (`api-stg.` y no `api.stg.`): el certificado gratui
 | PostgreSQL 16 | recurso "Database" de Coolify | 5432 | — | **No** | Todo: bases `desertica_api` y `desertica_cms` |
 | Redis | recurso de Coolify | 6379 | — | **No** | Nada importante (límite de peticiones y caché) |
 | `desertica-cms` | `ghcr.io/desertica/desertica-cms` | 1337 | `GET /_health` | Sí (admin y media) | `public/uploads` si no usas R2 |
-| `desertica-api` | construir (aún sin workflow, ver §6) | 3000 | `GET /api/health` | Sí | Comprobantes en `DOCUMENT_STORAGE_DIR` |
+| `desertica-api` | construir (aún sin workflow, ver §6) | 3000 | `GET /api/health` | Sí | Nada con `DOCUMENT_STORAGE=s3` (comprobantes en el bucket R2) |
 | `desertica-billing` | construir (aún sin workflow) | 8080 | `GET /health` | **No** | `/var/lib/billing` (SQLite y archivos) y el certificado |
 | `desertica-web` | `ghcr.io/desertica/desertica-web` | 4000 | `GET /` | Sí | Nada |
 | `desertica-backoffice` | construir (aún sin workflow) | 8080 | `GET /healthz` | Sí | Nada |
@@ -158,9 +158,16 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `CULQI_SECRET_KEY`, `CULQI_PUBLIC_KEY`, `CULQI_WEBHOOK_SECRET` | secretos | Claves de integración en staging. |
 | `BILLING_MODE` | `live` | Obligatorio en producción. |
 | `BILLING_URL`, `BILLING_SERVICE_TOKEN` | URL interna y secreto | El mismo token que `BILLING_SERVICE_TOKEN` de billing. |
-| `DOCUMENT_STORAGE_DIR` | ruta de un volumen | Montar un volumen persistente ahí. |
+| `DOCUMENT_STORAGE` | `s3` | Los comprobantes van al bucket R2 privado `desertica-comprobantes` (jurisdicción UE). Con `local` se pierden en cada despliegue: el API no tiene volumen. |
+| `DOCUMENT_S3_BUCKET` | `desertica-comprobantes` | Obligatoria con `s3`. |
+| `DOCUMENT_S3_ENDPOINT` | `https://<cuenta>.eu.r2.cloudflarestorage.com` | Obligatoria con `s3`. Endpoint UE (el bucket se creó con jurisdicción UE). |
+| `DOCUMENT_S3_REGION` | `auto` | Valor por defecto; R2 no usa regiones. |
+| `DOCUMENT_S3_ACCESS_KEY_ID`, `DOCUMENT_S3_SECRET_ACCESS_KEY` | secretos | Token de API de R2 con permiso **Object Read & Write solo sobre ese bucket**. No hace falta permiso de borrado. El bucket sigue privado: los PDF se descargan por los enlaces firmados del API. |
+| `DOCUMENT_STORAGE_DIR` | opcional | Solo para `local` y para la migración al bucket (abajo). |
 | `EXCHANGE_RATE_FALLBACK` | opcional | No es oficial; el tipo de cambio de SUNAT lo debe definir el contador. |
 | `REDIS_URL` | opcional | Ver §9. |
+
+**Migración única al bucket.** Si ya hay comprobantes en el directorio local (por ejemplo en desarrollo o en un servidor con volumen), cópialos una vez con las variables `DOCUMENT_S3_*` cargadas: primero `npm run documents:migrate-to-s3 -- --dry-run` (solo informa) y luego sin `--dry-run`. Se puede repetir sin riesgo: salta lo que ya está igual y **nunca sobrescribe**; si un archivo ya está en el bucket con otro contenido lo informa como conflicto, no lo toca y termina con error.
 
 > **Por qué staging también es `NODE_ENV=production`.** En producción el API rechaza `PAYMENT_GATEWAY_MODE=fake`, `BILLING_MODE=fake`, `AUTH_ALLOW_FAKE_GOOGLE=true` y exige Turnstile y Google reales. Eso es deliberado (protege producción de una mala configuración), pero implica que **staging necesita de verdad**: un client id de Google, claves de prueba de Stripe y de Culqi, y un billing levantado contra SUNAT beta.
 
@@ -255,7 +262,7 @@ Un solo servidor es un punto único de falla. Los respaldos tienen que salir del
 | Qué | Con qué | Frecuencia | Destino |
 |---|---|---|---|
 | PostgreSQL (`desertica_api`, `desertica_cms`) | Respaldo programado de Coolify o `pg_dump` | Diario, retención 14 días | R2/S3 fuera del servidor |
-| Comprobantes del API (`DOCUMENT_STORAGE_DIR`) | `rclone`/`restic` | Diario | R2/S3 |
+| Comprobantes del API (bucket `desertica-comprobantes`) | Ya fuera del servidor. Falta una copia en otra cuenta o proveedor y, si se quiere, un bloqueo de retención del bucket (R2 *bucket locks*) de 5 años | Diario | Otro bucket |
 | Billing (`/var/lib/billing`) | ídem | Diario | R2/S3 |
 | Media del CMS | R2 como almacenamiento principal; si es disco local, igual que arriba | — | R2/S3 |
 | Secretos y certificado digital | Gestor de contraseñas de la empresa | Al cambiar | Fuera del servidor |
