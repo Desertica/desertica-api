@@ -1,5 +1,13 @@
 import Joi from 'joi';
 
+/** Obligatoria con `DOCUMENT_STORAGE=s3`; si no, vacía. */
+const s3Required = (schema: Joi.StringSchema) =>
+  schema.when('DOCUMENT_STORAGE', {
+    is: 's3',
+    then: Joi.required(),
+    otherwise: Joi.allow('').default(''),
+  });
+
 /**
  * Esquema de las variables de entorno. La app no arranca si falta una
  * obligatoria o si alguna tiene un valor inválido.
@@ -188,8 +196,16 @@ export const envSchema = Joi.object({
   BILLING_SUBMISSION: Joi.string()
     .valid('IMMEDIATE', 'DAILY_SUMMARY')
     .optional(),
-  /** Directorio de los XML, CDR y PDF (nunca en Git). S3 compatible queda para después. */
+  /** Dónde se guardan los XML, CDR y PDF: directorio local o bucket S3 compatible (R2) privado. */
+  DOCUMENT_STORAGE: Joi.string().valid('local', 's3').default('local'),
+  /** Directorio local (nunca en Git). Con `s3` solo lo usa la migración al bucket. */
   DOCUMENT_STORAGE_DIR: Joi.string().default('./storage/documents'),
+  DOCUMENT_S3_BUCKET: s3Required(Joi.string()),
+  /** R2 en la UE: `https://<cuenta>.eu.r2.cloudflarestorage.com`. */
+  DOCUMENT_S3_ENDPOINT: s3Required(Joi.string().uri()),
+  DOCUMENT_S3_REGION: Joi.string().default('auto'),
+  DOCUMENT_S3_ACCESS_KEY_ID: s3Required(Joi.string()),
+  DOCUMENT_S3_SECRET_ACCESS_KEY: s3Required(Joi.string()),
   /** Tipo de cambio USD→PEN de respaldo cuando no hay uno cargado en `Setting`. */
   EXCHANGE_RATE_FALLBACK: Joi.string()
     .pattern(/^\d+(\.\d{1,4})?$/)
@@ -253,7 +269,13 @@ export interface EnvVars {
   BILLING_URL: string;
   BILLING_SERVICE_TOKEN: string;
   BILLING_SUBMISSION?: 'IMMEDIATE' | 'DAILY_SUMMARY';
+  DOCUMENT_STORAGE: 'local' | 's3';
   DOCUMENT_STORAGE_DIR: string;
+  DOCUMENT_S3_BUCKET: string;
+  DOCUMENT_S3_ENDPOINT: string;
+  DOCUMENT_S3_REGION: string;
+  DOCUMENT_S3_ACCESS_KEY_ID: string;
+  DOCUMENT_S3_SECRET_ACCESS_KEY: string;
   EXCHANGE_RATE_FALLBACK: string;
   PUBLIC_API_URL: string;
   DOCUMENT_WORKER_SECONDS: number;

@@ -142,4 +142,33 @@ describe('envSchema', () => {
       envSchema.validate({ DATABASE_URL: 'mysql://x' }).error,
     ).toBeDefined();
   });
+
+  it('requires the bucket settings only when DOCUMENT_STORAGE=s3', () => {
+    expect(envSchema.validate(base).value).toMatchObject({
+      DOCUMENT_STORAGE: 'local',
+      DOCUMENT_S3_BUCKET: '',
+    });
+    const { error } = envSchema.validate(
+      { ...base, DOCUMENT_STORAGE: 's3' },
+      { abortEarly: false },
+    );
+    for (const name of [
+      'DOCUMENT_S3_BUCKET',
+      'DOCUMENT_S3_ENDPOINT',
+      'DOCUMENT_S3_ACCESS_KEY_ID',
+      'DOCUMENT_S3_SECRET_ACCESS_KEY',
+    ]) {
+      expect(error?.message).toMatch(name);
+    }
+    const ok = envSchema.validate({
+      ...base,
+      DOCUMENT_STORAGE: 's3',
+      DOCUMENT_S3_BUCKET: 'desertica-comprobantes',
+      DOCUMENT_S3_ENDPOINT: 'https://abc.eu.r2.cloudflarestorage.com',
+      DOCUMENT_S3_ACCESS_KEY_ID: 'id',
+      DOCUMENT_S3_SECRET_ACCESS_KEY: 'secret',
+    });
+    expect(ok.error).toBeUndefined();
+    expect(ok.value).toMatchObject({ DOCUMENT_S3_REGION: 'auto' });
+  });
 });

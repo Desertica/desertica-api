@@ -111,7 +111,7 @@ Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payment
 
 ### Comprobantes
 
-`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local, `DOCUMENT_STORAGE_DIR`, fuera de Git) y sigue el estado hasta que SUNAT resuelve.
+`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local `DOCUMENT_STORAGE_DIR` o, con `DOCUMENT_STORAGE=s3`, un bucket S3 compatible privado; nunca sobrescribe un archivo ya guardado) y sigue el estado hasta que SUNAT resuelve.
 
 - Emisión automática al confirmarse un pago y nota de crédito automática al reembolsar (`Setting.autoIssueDocuments`, por defecto activo). Los pagos manuales los recoge el barrido del worker.
 - Tipo de cambio: `Setting.exchangeRates` (por fecha) → `Setting.exchangeRateUsdPen` → `EXCHANGE_RATE_FALLBACK` (`3.7500`, no es el oficial: el contador define la fuente).
@@ -163,7 +163,7 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `PAYMENT_WINDOW_MINUTES`, `EXPIRY_SWEEP_SECONDS` | Plazo para pagar una reserva web y frecuencia del barrido de vencimientos |
 | `THROTTLE_SCALE` | Multiplica los límites por IP; solo válida con `NODE_ENV=test` (la usan los e2e) |
 | `PAYMENT_GATEWAY_MODE`, `STRIPE_*`, `CULQI_*`, `REFUND_SWEEP_SECONDS` | Pasarelas (`fake` solo en desarrollo y pruebas) y barrido de reembolsos |
-| `BILLING_MODE`, `BILLING_URL`, `BILLING_SERVICE_TOKEN`, `BILLING_SUBMISSION`, `DOCUMENT_STORAGE_DIR`, `DOCUMENT_WORKER_SECONDS`, `EXCHANGE_RATE_FALLBACK` | Comprobantes (ver "Comprobantes") |
+| `BILLING_MODE`, `BILLING_URL`, `BILLING_SERVICE_TOKEN`, `BILLING_SUBMISSION`, `DOCUMENT_STORAGE`, `DOCUMENT_STORAGE_DIR`, `DOCUMENT_S3_*`, `DOCUMENT_WORKER_SECONDS`, `EXCHANGE_RATE_FALLBACK` | Comprobantes (ver "Comprobantes") |
 | `REFRESH_COOKIE_SECURE` | Atributo `Secure` de la cookie `desertica_refresh`; solo se puede apagar fuera de producción |
 | `MAIL_DRIVER`, `SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO` | Correo saliente (ver "Correo"); producción exige `smtp` con TLS |
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
