@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CaptchaService } from '../../common/captcha/captcha.service';
 import { EnvVars } from '../../config/env.validation';
@@ -15,6 +15,21 @@ export class PublicComplianceService {
     private readonly notifications: NotificationsService,
     private readonly config: ConfigService<EnvVars, true>,
   ) {}
+
+  /** Datos del proveedor que van en la cabecera de la hoja de reclamación; nada fiscal ni interno. */
+  async company() {
+    const company = await this.prisma.company.findFirst({
+      where: { active: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    if (!company) throw new NotFoundException('Company not configured');
+    return {
+      legalName: company.legalName,
+      tradeName: company.tradeName ?? undefined,
+      ruc: company.ruc,
+      fiscalAddress: company.fiscalAddress,
+    };
+  }
 
   async recordConsent(dto: RecordConsentDto, ip?: string): Promise<void> {
     // Solo categorías con valor booleano y nombre simple.

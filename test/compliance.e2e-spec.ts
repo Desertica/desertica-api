@@ -13,6 +13,7 @@ import {
   rand,
 } from './fixtures';
 import { createTestApp, loginAs, TestSession } from './helpers';
+import { ensureBilling } from './payment-helpers';
 
 type Body = Record<string, any>;
 // Los textos legales son inmutables y no se pueden borrar: cada corrida usa idiomas propios.
@@ -621,8 +622,13 @@ describe('Cumplimiento (e2e)', () => {
   });
 
   describe('waiver versions', () => {
+    const WAIVER_TEXT = '# Descargo\n\nTexto escrito en el backoffice.';
+    /** Publica con el título y el texto del descargo salvo que `body` traiga otros. */
     const publish = (body: Body, who = admin) =>
-      http().post('/api/legal-documents').set(who.auth).send(body);
+      http()
+        .post('/api/legal-documents')
+        .set(who.auth)
+        .send({ title: 'Descargo', text: WAIVER_TEXT, ...body });
 
     /** Tour con `requiresWaiver` y sin snapshot: `createCatalog` ya publica uno en inglés. */
     const bareTour = async (prefix = 'fx') => {
@@ -676,14 +682,12 @@ describe('Cumplimiento (e2e)', () => {
         locale: 'es',
         tourRefId: a.id,
         cmsSlug: a.slug,
-        title: `Tour ${a.slug} (es)`,
+        title: 'Descargo',
       });
       const row = await prisma.legalDocument.findUniqueOrThrow({
         where: { id: (es1.body as Body).id },
       });
-      expect(row.textSnapshot).toBe(
-        `# Descargo de ${a.slug}\n\nTexto del descargo en es.`,
-      );
+      expect(row.textSnapshot).toBe(WAIVER_TEXT);
       expect(row.contentHash).toBe((es1.body as Body).contentHash);
       // Es inmutable como los demás documentos legales.
       await expect(
@@ -712,31 +716,18 @@ describe('Cumplimiento (e2e)', () => {
       ).toEqual([1, 2, 3, 4]);
     });
 
-    it('fails with a clear error when the CMS data is missing', async () => {
-      const noTour = await bareTour('sin-tour');
-      const noText = await bareTour('sin-descargo');
-      const missingTour = await publish({
-        kind: 'WAIVER',
-        locale: 'es',
-        tourRefId: noTour.id,
-      }).expect(422);
-      expect((missingTour.body as Body).message).toContain(
-        `no tour "${noTour.slug}"`,
-      );
-      const missingText = await publish({
-        kind: 'WAIVER',
-        locale: 'es',
-        tourRefId: noText.id,
-      }).expect(422);
-      expect(JSON.stringify(missingText.body)).toContain('waiverBody');
+    it('needs the title and the text: nothing is read from the CMS', async () => {
+      const t = await bareTour();
+      const base = { kind: 'WAIVER', locale: 'es', tourRefId: t.id };
+      await publish({ ...base, text: undefined }).expect(422);
+      await publish({ ...base, title: undefined }).expect(422);
+      await publish({ ...base, text: '   ' }).expect(422);
       expect(
-        await prisma.legalDocument.count({
-          where: { tourRefId: { in: [noTour.id, noText.id] } },
-        }),
+        await prisma.legalDocument.count({ where: { tourRefId: t.id } }),
       ).toBe(0);
     });
 
-    it('validates tourRefId and cmsSlug by kind and needs legal:write', async () => {
+    it('validates tourRefId by kind and needs legal:write', async () => {
       const t = await bareTour();
       await publish({ kind: 'WAIVER', locale: 'es' }).expect(422);
       await publish({
@@ -745,18 +736,17 @@ describe('Cumplimiento (e2e)', () => {
         tourRefId: '00000000-0000-4000-8000-000000000000',
       }).expect(422);
       await publish({
-        kind: 'WAIVER',
-        locale: 'es',
-        tourRefId: t.id,
-        cmsSlug: 'terms',
-      }).expect(422);
-      await publish({
         kind: 'TERMS',
         locale: LOCALE,
         cmsSlug: 'terms',
         tourRefId: t.id,
       }).expect(422);
-      await publish({ kind: 'TERMS', locale: LOCALE }).expect(422);
+      await publish({
+        kind: 'TERMS',
+        locale: LOCALE,
+        title: undefined,
+        text: undefined,
+      }).expect(422);
       await publish(
         { kind: 'WAIVER', locale: 'es', tourRefId: t.id },
         operator,
@@ -1021,6 +1011,19 @@ describe('Cumplimiento (e2e)', () => {
         .post('/api/public/consents')
         .send({ anonymousId, categories: 'all', policyVersion: 1 })
         .expect(422);
+    });
+  });
+
+  describe('public company', () => {
+    it('serves the fiscal identity of the active company and nothing internal', async () => {
+      const company = await ensureBilling(app);
+      const res = await http().get('/api/public/company').expect(200);
+      expect(res.body).toEqual({
+        legalName: company.legalName,
+        ...(company.tradeName ? { tradeName: company.tradeName } : {}),
+        ruc: company.ruc,
+        fiscalAddress: company.fiscalAddress,
+      });
     });
   });
 

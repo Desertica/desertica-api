@@ -8,7 +8,7 @@ import {
   priceBooking,
   type CancellationTier,
 } from '../../common/money';
-import { limaMonthRange } from '../../common/time/lima';
+import { addMonths, limaDate, limaMonthRange } from '../../common/time/lima';
 import { Prisma } from '../../generated/prisma/client';
 import { Currency, TourFormat } from '../../generated/prisma/enums';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -39,12 +39,17 @@ export class AvailabilityService {
     if (!tour?.active) throw new NotFoundException('Tour not found');
 
     const { from, to } = limaMonthRange(q.month);
+    // El calendario de la web llega hasta el fin del mes `availabilityMonths - 1` después del actual.
+    const months = await this.settings.getNumber('availabilityMonths');
+    const horizon = limaMonthRange(
+      addMonths(limaDate(now).slice(0, 7), months - 1),
+    ).to;
     const [departures, rules, blackouts] = await Promise.all([
       this.prisma.departure.findMany({
         where: {
           tourRefId: tour.id,
           status: 'OPEN',
-          startsAt: { gte: from, lt: to },
+          startsAt: { gte: from, lt: to < horizon ? to : horizon },
           ...(q.format ? { format: q.format } : {}),
           ...(q.language ? { language: q.language } : {}),
         },
@@ -123,6 +128,11 @@ export class AvailabilityService {
       throw new UnprocessableEntityException('Unknown departureId');
     const children = input.children ?? 0;
     const people = input.adults + children;
+    await this.settings.assertPartySize({
+      adults: input.adults,
+      children,
+      people,
+    });
 
     const blackouts = await this.prisma.blackout.findMany({
       where: {

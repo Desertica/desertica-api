@@ -41,6 +41,8 @@ export class HoldsService {
     now = new Date(),
   ) {
     await this.blocked.assertAllowed({ ip: ctx.ip });
+    // El bloqueo solo conoce el total; adultos y niños se revisan al cotizar y al reservar.
+    await this.settings.assertPartySize({ people: seatsWanted });
     await this.captcha.verify(ctx.turnstileToken, ctx.ip);
     // Tope por IP: sin él, un solo cliente podría retener todo el cupo renovando bloqueos.
     if (ctx.ip) {

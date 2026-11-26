@@ -160,6 +160,12 @@ export class PublicComplianceController {
     await this.misc.recordConsent(dto, req.ip);
   }
 
+  @Get('company')
+  @Throttle(rateLimit(30, 60_000))
+  company() {
+    return this.misc.company();
+  }
+
   @Get('legal-documents/current')
   currentLegal(@Query() q: LocaleQuery) {
     return this.legal.current(q.locale);

@@ -2,7 +2,11 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EnvVars } from '../../config/env.validation';
 import { BILLING_CLIENT } from './billing-client';
-import { DOCUMENT_STORAGE, LocalDocumentStorage } from './document-storage';
+import {
+  DOCUMENT_STORAGE,
+  LocalDocumentStorage,
+  S3DocumentStorage,
+} from './document-storage';
 import { ExchangeRateService } from './exchange-rate.service';
 import { FakeBillingClient } from './fake-billing.client';
 import { HttpBillingClient } from './http-billing.client';
@@ -27,9 +31,21 @@ import { HttpBillingClient } from './http-billing.client';
       provide: DOCUMENT_STORAGE,
       inject: [ConfigService],
       useFactory: (config: ConfigService<EnvVars, true>) =>
-        new LocalDocumentStorage(
-          config.get('DOCUMENT_STORAGE_DIR', { infer: true }),
-        ),
+        config.get('DOCUMENT_STORAGE', { infer: true }) === 's3'
+          ? S3DocumentStorage.fromOptions({
+              bucket: config.get('DOCUMENT_S3_BUCKET', { infer: true }),
+              endpoint: config.get('DOCUMENT_S3_ENDPOINT', { infer: true }),
+              region: config.get('DOCUMENT_S3_REGION', { infer: true }),
+              accessKeyId: config.get('DOCUMENT_S3_ACCESS_KEY_ID', {
+                infer: true,
+              }),
+              secretAccessKey: config.get('DOCUMENT_S3_SECRET_ACCESS_KEY', {
+                infer: true,
+              }),
+            })
+          : new LocalDocumentStorage(
+              config.get('DOCUMENT_STORAGE_DIR', { infer: true }),
+            ),
     },
     ExchangeRateService,
   ],

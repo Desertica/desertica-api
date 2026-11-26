@@ -12,6 +12,12 @@ export const toTourRefDto = (t: TourRef) => ({
   slug: t.slug,
   title: t.title,
   durationHours: t.durationHours,
+  format: t.format,
+  languages: t.languages,
+  meetingPoint: t.meetingPoint as { en?: string; es?: string } | null,
+  meetingPointUrl: t.meetingPointUrl,
+  latitude: t.latitude,
+  longitude: t.longitude,
   active: t.active,
   requiresWaiver: t.requiresWaiver,
   minAge: t.minAge,
@@ -19,6 +25,20 @@ export const toTourRefDto = (t: TourRef) => ({
   defaultCapacity: t.defaultCapacity,
   cancellationPolicyId: t.cancellationPolicyId,
   cmsSyncedAt: t.cmsSyncedAt,
+});
+
+/** Datos operativos de un tour para la ficha de la web. */
+export const toPublicTourDto = (t: TourRef) => ({
+  slug: t.slug,
+  durationHours: t.durationHours,
+  format: t.format,
+  languages: t.languages,
+  meetingPoint: t.meetingPoint as { en?: string; es?: string } | null,
+  meetingPointUrl: t.meetingPointUrl,
+  latitude: t.latitude,
+  longitude: t.longitude,
+  minAge: t.minAge,
+  minHeightCm: t.minHeightCm,
 });
 
 export const toDepartureDto = (

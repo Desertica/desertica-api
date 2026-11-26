@@ -52,10 +52,11 @@ src/
   modules/
     auth/                 Login con Google, JWT, refresh con rotación, guard, permisos
     users/, roles/, audit/  Staff, roles (admin, operator) y auditoría de solo inserción
-    settings/             Ajustes operativos (depósito, bloqueo, tope de reembolso, plazos)
+    settings/             Ajustes operativos (depósito, bloqueo, reglas de reserva de la web, tope de
+                          reembolso, plazos)
     cms/                  Cliente de solo lectura del CMS con caché y último valor bueno
-    catalog/              TourRef, salidas (con series), precios, bloqueos, políticas,
-                          disponibilidad pública y cotización
+    catalog/              TourRef (con los datos operativos del tour), salidas (con series), precios,
+                          bloqueos, políticas, disponibilidad pública y cotización
     bookings/             Bloqueo de cupo, reservas web y manuales, pagos manuales, enlaces de
                           pago, cancelación, reprogramación, vencimientos
     admin/                Empresa y series, bloqueos de correos e IP, panel y reporte de ventas,
@@ -92,7 +93,7 @@ Las plantillas (`modules/notifications/templates/`) describen cada correo como b
 
 ### Descargos de responsabilidad
 
-El texto vive en el CMS (`tour.waiverBody`). `POST /legal-documents` con `kind: WAIVER` y `tourRefId` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
+El texto se escribe en el backoffice (Configuración). `POST /legal-documents` con `kind: WAIVER`, `tourRefId`, `title` y `text` guarda un snapshot inmutable por tour e idioma; cada `Waiver` apunta (`legalDocumentId`) a la versión vigente en el idioma de la reserva (o la de `en`) y el formulario público devuelve ese texto. Un tour que exige descargo y no tiene ninguno publicado no se puede reservar (409): publica el descargo de cada tour antes de venderlo.
 
 ### IP del cliente y trabajo en segundo plano
 
@@ -110,7 +111,7 @@ Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payment
 
 ### Comprobantes
 
-`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local, `DOCUMENT_STORAGE_DIR`, fuera de Git) y sigue el estado hasta que SUNAT resuelve.
+`DocumentsService` crea el `Document` (serie y correlativo con `UPDATE … RETURNING` dentro de la transacción de la reserva, base e IGV con la tasa de `Company`, tipo de cambio de `ExchangeRateService` para USD) y deja el envío en la cola `DocumentJob` (en la base, sin Redis). `DocumentWorker` despacha la cola contra `desertica-billing` (`BillingClient`: `HttpBillingClient` sobre `openapi/billing.yaml`, `FakeBillingClient` con `BILLING_MODE=fake`) mandando **la misma petición y la misma `externalId`** en cada reintento (espera de 30 s que se duplica hasta 1 h, 10 intentos), guarda XML, CDR y PDF detrás de `DocumentStorage` (directorio local `DOCUMENT_STORAGE_DIR` o, con `DOCUMENT_STORAGE=s3`, un bucket S3 compatible privado; nunca sobrescribe un archivo ya guardado) y sigue el estado hasta que SUNAT resuelve.
 
 - Emisión automática al confirmarse un pago y nota de crédito automática al reembolsar (`Setting.autoIssueDocuments`, por defecto activo). Los pagos manuales los recoge el barrido del worker.
 - Tipo de cambio: `Setting.exchangeRates` (por fecha) → `Setting.exchangeRateUsdPen` → `EXCHANGE_RATE_FALLBACK` (`3.7500`, no es el oficial: el contador define la fuente).
@@ -162,7 +163,7 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `PAYMENT_WINDOW_MINUTES`, `EXPIRY_SWEEP_SECONDS` | Plazo para pagar una reserva web y frecuencia del barrido de vencimientos |
 | `THROTTLE_SCALE` | Multiplica los límites por IP; solo válida con `NODE_ENV=test` (la usan los e2e) |
 | `PAYMENT_GATEWAY_MODE`, `STRIPE_*`, `CULQI_*`, `REFUND_SWEEP_SECONDS` | Pasarelas (`fake` solo en desarrollo y pruebas) y barrido de reembolsos |
-| `BILLING_MODE`, `BILLING_URL`, `BILLING_SERVICE_TOKEN`, `BILLING_SUBMISSION`, `DOCUMENT_STORAGE_DIR`, `DOCUMENT_WORKER_SECONDS`, `EXCHANGE_RATE_FALLBACK` | Comprobantes (ver "Comprobantes") |
+| `BILLING_MODE`, `BILLING_URL`, `BILLING_SERVICE_TOKEN`, `BILLING_SUBMISSION`, `DOCUMENT_STORAGE`, `DOCUMENT_STORAGE_DIR`, `DOCUMENT_S3_*`, `DOCUMENT_WORKER_SECONDS`, `EXCHANGE_RATE_FALLBACK` | Comprobantes (ver "Comprobantes") |
 | `REFRESH_COOKIE_SECURE` | Atributo `Secure` de la cookie `desertica_refresh`; solo se puede apagar fuera de producción |
 | `MAIL_DRIVER`, `SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO` | Correo saliente (ver "Correo"); producción exige `smtp` con TLS |
 | `THROTTLE_LIMIT` / `THROTTLE_TTL_MS` | Rate limit global por IP |
