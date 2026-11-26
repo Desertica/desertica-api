@@ -153,6 +153,7 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `MAIL_DRIVER` | `smtp` | Obligatorio en producción. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | obligatorias | Relay de Google Workspace; `MAIL_REPLY_TO` y `STAFF_NOTIFY_EMAIL` opcionales. |
 | `CMS_URL`, `CMS_API_TOKEN` | URL interna del CMS | Token de solo lectura. |
+| `CMS_WEBHOOK_SECRET` | secreto, 32+ caracteres (`openssl rand -hex 32`) | El mismo valor va en la cabecera `X-Webhook-Secret` del webhook de Strapi (§8). Vacío = webhook apagado (responde 503) y los tours solo se sincronizan con el botón. |
 | `PAYMENT_GATEWAY_MODE` | `live` | Obligatorio en producción. En staging se usan **claves de prueba**, no un modo simulado. |
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | secretos | Claves `test` en staging. |
 | `CULQI_SECRET_KEY`, `CULQI_PUBLIC_KEY`, `CULQI_WEBHOOK_SECRET` | secretos | Claves de integración en staging. |
@@ -234,6 +235,7 @@ El certificado digital y la clave SOL **reales** solo existen en el servidor de 
 |---|---|---|
 | Stripe | Panel de Stripe (modo prueba), URL `https://api-stg.<dominio>/api/webhooks/stripe` | Eventos: `payment_intent.succeeded`, `.payment_failed`, `.canceled`, `.requires_action`; `refund.created`, `.updated`, `.failed`; `charge.dispute.created`, `.updated`, `.closed`, `.funds_withdrawn`, `.funds_reinstated`. El secreto va en `STRIPE_WEBHOOK_SECRET`. |
 | Culqi | Panel de Culqi, URL `https://api-stg.<dominio>/api/webhooks/culqi` | La forma de firmar el webhook **no está confirmada** con la documentación de Culqi (hoy se asume HMAC en `x-culqi-signature`). Verificar con un evento real antes de confiar en él. |
+| CMS (Strapi) | Admin del CMS de staging > Settings > Webhooks, URL `https://api-stg.<dominio>/api/webhooks/cms` (o la URL interna del API si el CMS la alcanza) | Eventos `Entry: Publish` y `Unpublish`; cabecera `X-Webhook-Secret` = `CMS_WEBHOOK_SECRET`. Al publicar o despublicar un tour el API lo sincroniza solo (crea inactivo, refresca título, desactiva). Pasos en `docs/WEBHOOKS.md` del CMS. `Trigger` debe responder 200. Si Cloudflare tiene reglas anti-bots delante del API, dejar pasar esa ruta. |
 | Google (login) | Consola de Google Cloud | Cliente OAuth tipo "Aplicación web"; origen JS autorizado = URL del backoffice. |
 | Apple Pay | Panel de Stripe | Registrar el dominio del sitio y publicar el archivo de verificación que Stripe entrega, en la raíz del sitio. |
 | Correo | Admin de Google Workspace | Autorizar la IP del servidor en el relay SMTP y configurar SPF, DKIM y DMARC del dominio. |
