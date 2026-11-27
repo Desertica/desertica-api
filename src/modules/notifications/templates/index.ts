@@ -13,6 +13,7 @@ import {
   complaintReceived,
   complaintStaffAlert,
   contactMessage,
+  paymentStaffAlert,
 } from './compliance';
 import { langOf } from './format';
 import {
@@ -39,6 +40,7 @@ const TEMPLATES = {
   complaint_answered: complaintAnswered,
   complaint_staff_alert: complaintStaffAlert,
   contact_message: contactMessage,
+  payment_staff_alert: paymentStaffAlert,
 } satisfies Record<string, Builder>;
 
 export type TemplateName = keyof typeof TEMPLATES;

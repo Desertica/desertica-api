@@ -186,3 +186,53 @@ export const contactMessage: Builder = (_lang, d) => ({
   ],
   footer: 'Aviso interno de Desértica.',
 });
+
+const PAYMENT_ALERTS: Record<string, string> = {
+  amount_mismatch: 'El importe cobrado no coincide con la reserva',
+  payment_amount_mismatch: 'El importe cobrado no coincide con la reserva',
+  dispute_opened: 'El cliente abrió una disputa (contracargo)',
+  document_auto_issue_failed: 'No se pudo emitir el comprobante automático',
+  document_failed: 'SUNAT rechazó o no recibió un comprobante',
+  document_void_failed: 'No se pudo anular un comprobante',
+  payment_after_cancellation: 'Llegó un pago de una reserva cancelada',
+  payment_failed: 'Falló un pago',
+  payment_overpaid: 'El cliente pagó de más',
+  payment_reactivated_booking: 'Un pago reactivó una reserva vencida',
+  refund_external: 'Se hizo un reembolso fuera del backoffice',
+  refund_external_exceeds_payment: 'Un reembolso externo supera lo pagado',
+  refund_failed: 'Falló un reembolso',
+  refund_reversed: 'La pasarela revirtió un reembolso',
+};
+
+/** Aviso interno de pagos y comprobantes (`StaffAlertsService`). Siempre en español. */
+export const paymentStaffAlert: Builder = (_lang, d) => {
+  const code = str(d, 'code');
+  const title = PAYMENT_ALERTS[code] ?? `Aviso de pagos: ${code}`;
+  // Datos del aviso tal cual (ids, motivo, importes); solo valores simples.
+  const rows = Object.entries(d)
+    .filter(
+      ([k, v]) =>
+        k !== 'code' && ['string', 'number', 'boolean'].includes(typeof v),
+    )
+    .map(
+      ([k, v]) =>
+        [
+          k,
+          String(v)
+            .replace(/[\r\n]+/g, ' ')
+            .slice(0, 300),
+        ] as [string, string],
+    );
+  return {
+    subject: title,
+    heading: title,
+    blocks: [
+      { type: 'facts', rows: [['Código', code], ...rows] },
+      {
+        type: 'p',
+        text: 'Revísalo en el backoffice (Pagos y reembolsos o Comprobantes).',
+      },
+    ],
+    footer: 'Aviso interno de Desértica.',
+  };
+};
