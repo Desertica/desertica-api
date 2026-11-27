@@ -63,6 +63,11 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
     answeredAt: '2026-10-10T15:00:00.000Z',
   },
   complaint_staff_alert: { correlative: 42, dueAt: '2026-10-25T15:00:00.000Z' },
+  payment_staff_alert: {
+    code: 'document_auto_issue_failed',
+    paymentId: 'p-1',
+    reason: 'No active company is configured',
+  },
   contact_message: {
     id: 'x',
     name: 'Marta',
@@ -229,6 +234,17 @@ describe('email templates', () => {
       renderEmail('complaint_staff_alert', 'en', SAMPLES.complaint_staff_alert)
         .subject,
     ).toBe('Nuevo reclamo N.º 000042');
+    const alert = renderEmail(
+      'payment_staff_alert',
+      'en',
+      SAMPLES.payment_staff_alert,
+    );
+    expect(alert.subject).toBe('No se pudo emitir el comprobante automático');
+    expect(alert.html).toContain('No active company is configured');
+    expect(
+      renderEmail('payment_staff_alert', 'es', { code: 'something_new' })
+        .subject,
+    ).toBe('Aviso de pagos: something_new');
     const received = renderEmail(
       'complaint_received',
       undefined,
