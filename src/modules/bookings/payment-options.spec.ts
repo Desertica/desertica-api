@@ -10,9 +10,15 @@ const base = {
 };
 
 describe('paymentOptionsFor', () => {
-  it('offers Stripe and Culqi in USD', () => {
-    expect(paymentOptionsFor(base)).toEqual([
+  it('offers Stripe and Culqi in USD when Stripe is on', () => {
+    expect(paymentOptionsFor(base, true)).toEqual([
       { provider: 'STRIPE', kinds: ['FULL'] },
+      { provider: 'CULQI', kinds: ['FULL'] },
+    ]);
+  });
+
+  it('offers only Culqi in USD when Stripe is off (the default)', () => {
+    expect(paymentOptionsFor(base)).toEqual([
       { provider: 'CULQI', kinds: ['FULL'] },
     ]);
   });

@@ -445,6 +445,7 @@ paths:
                 token: { type: string, description: Token generado por Culqi.js }
                 email: { type: string, format: email }
                 paymentId: { type: string, format: uuid, description: Pago `REQUIRES_ACTION` que se continúa tras 3DS. }
+                deviceId: { type: string, maxLength: 100, description: Resultado de `Culqi3DS.generateDevice()`. }
                 authentication3DS: { type: object, additionalProperties: true }
       responses:
         '201':
@@ -693,9 +694,9 @@ paths:
       tags: [Webhooks]
       summary: Eventos de Culqi
       description: |
-        Valida la firma HMAC-SHA256 del cuerpo en `x-culqi-signature` (400 si falta o no coincide; 503 si no hay
-        secreto configurado). El API no confía en el contenido del evento: vuelve a consultar el cargo a Culqi.
-        El esquema de firma está pendiente de verificar contra la documentación oficial de Culqi.
+        Culqi no documenta una firma para sus webhooks. El API no confía en el cuerpo: toma solo el `id` del evento
+        (`evt_test_…` / `evt_live_…`) y lo consulta en `GET /v2/events/{id}` con la clave secreta; los cargos se
+        vuelven a consultar también. 400 si falta el id o Culqi no conoce ese evento; 503 si no hay clave secreta.
       security: []
       requestBody:
         required: true
@@ -3153,6 +3154,10 @@ components:
           type: string
           format: uuid
           description: Pago `REQUIRES_ACTION` que se continúa tras la autenticación 3DS (con `authentication3DS`).
+        deviceId:
+          type: string
+          maxLength: 100
+          description: Resultado de `Culqi3DS.generateDevice()`. Se envía igual en el cargo y en su reintento 3DS.
         authentication3DS:
           type: object
           additionalProperties: true

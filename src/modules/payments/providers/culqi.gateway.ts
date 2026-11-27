@@ -1,4 +1,3 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { Currency } from '../../../generated/prisma/client';
 import {
   CreatePaymentInput,
@@ -17,7 +16,6 @@ export interface CulqiGatewayOptions {
   publicKey: string;
   /** `https://api.culqi.com/v2`; en pruebas, un servidor local. */
   apiUrl: string;
-  webhookSecret: string;
 }
 
 type Json = Record<string, unknown>;
@@ -31,20 +29,19 @@ const text = (value: unknown): string =>
       : '';
 
 /**
- * Adaptador de Culqi (USD y PEN).
- *
- * IMPORTANTE: el entorno donde se escribió no tenía acceso a docs.culqi.com ni
- * a api.culqi.com. Lo que sigue se basó en los tipos de `culqi-node@2.1.0`
- * (endpoints `/v2/charges` y `/v2/refunds`, campos `amount`, `currency_code`,
- * `email`, `source_id`, `charge_id`, `outcome`, `paid`, `dispute`). Tres cosas
- * NO están verificadas contra la documentación oficial y deben revisarse con
- * una clave de prueba: (1) la señal de 3DS pendiente (`action_code: "REVIEW"`)
- * y el campo `authentication_3DS` del reintento; (2) el esquema de firma del
- * webhook (aquí HMAC-SHA256 del cuerpo en `x-culqi-signature`); (3) los
- * valores permitidos de `reason` en reembolsos.
- *
- * Como la firma no está verificada, el webhook nunca confía en su contenido:
- * solo usa el id del cargo y vuelve a consultarlo a Culqi con la clave secreta.
+ * Adaptador de Culqi (USD y PEN), contrastado con docs.culqi.com y
+ * apidocs.culqi.com (noviembre de 2026):
+ * - `POST /v2/charges`: `amount` entero en céntimos (100..9 999 900),
+ *   `currency_code` `PEN` o `USD`. Responde 201 si cobró y 200 con
+ *   `{ action_code: "REVIEW" }` si el banco pide 3DS; el reintento repite el
+ *   mismo `source_id` y `device_finger_print_id` y añade `authentication_3DS`.
+ * - `POST /v2/refunds`: `reason` es `duplicado`, `fraudulento` o
+ *   `solicitud_comprador`; `status` vuelve como `Completa`, `Pendiente` o
+ *   `Rechazado` (mayúsculas variables).
+ * - Webhooks: Culqi **no documenta firma** del webhook. Por eso el cuerpo no
+ *   se cree: solo se toma el id del evento y se consulta `GET /v2/events/{id}`
+ *   con la clave secreta; un id que Culqi no conoce es un evento falso (400).
+ *   Los cargos se vuelven a consultar con `GET /v2/charges/{id}`.
  */
 export class CulqiGateway implements PaymentGateway {
   readonly provider = 'CULQI' as const;
@@ -64,7 +61,7 @@ export class CulqiGateway implements PaymentGateway {
       throw new GatewayError('A Culqi token and email are required', 'invalid');
     }
     const body: Json = {
-      amount: String(input.amountCents),
+      amount: input.amountCents,
       currency_code: input.currency,
       email: input.email,
       source_id: input.token,
@@ -75,6 +72,8 @@ export class CulqiGateway implements PaymentGateway {
         bookingReference: input.bookingReference,
       },
     };
+    if (input.deviceId)
+      body.antifraud_details = { device_finger_print_id: input.deviceId };
     if (input.authentication3DS)
       body.authentication_3DS = input.authentication3DS;
     const charge = await this.call('POST', '/charges', body);
@@ -97,34 +96,51 @@ export class CulqiGateway implements PaymentGateway {
       reason: 'solicitud_comprador',
       metadata: { refundId: input.refundId },
     });
+    return this.fromRefund(refund, input);
+  }
+
+  private fromRefund(
+    refund: Json,
+    fallback?: { paymentProviderRef: string; amountCents: number },
+  ): GatewayRefund {
+    const status = text(refund.status).toLowerCase();
     return {
       providerRef: text(refund.id),
-      paymentProviderRef: text(refund.charge_id) || input.paymentProviderRef,
-      status: 'SUCCEEDED',
-      amountCents: Number(refund.amount ?? input.amountCents),
+      paymentProviderRef:
+        text(refund.charge_id) || (fallback?.paymentProviderRef ?? ''),
+      // Sin estado (respuesta 201 sin `status`) se toma como hecha.
+      status: status.startsWith('pendiente')
+        ? 'PENDING'
+        : status.startsWith('rechazad')
+          ? 'FAILED'
+          : 'SUCCEEDED',
+      amountCents: Number(refund.amount ?? fallback?.amountCents ?? 0),
     };
   }
 
-  async parseWebhook(
-    rawBody: Buffer,
-    headers: Record<string, string | string[] | undefined>,
-  ): Promise<GatewayEvent> {
-    if (!this.options.webhookSecret) {
-      throw new GatewayNotConfiguredError('Culqi webhook is not configured');
-    }
-    this.verifySignature(rawBody, headers['x-culqi-signature']);
-
-    let event: Json;
+  async parseWebhook(rawBody: Buffer): Promise<GatewayEvent> {
+    let posted: Json;
     try {
-      event = JSON.parse(rawBody.toString('utf8')) as Json;
+      posted = JSON.parse(rawBody.toString('utf8')) as Json;
     } catch {
       throw new InvalidWebhookSignatureError('Body is not JSON');
     }
+    const eventId = typeof posted.id === 'string' ? posted.id : '';
+    if (!/^evt_(test|live)_[A-Za-z0-9]+$/.test(eventId)) {
+      throw new InvalidWebhookSignatureError('Missing Culqi event id');
+    }
+
+    // Culqi no firma sus webhooks: el evento auténtico es el que Culqi devuelve.
+    let event: Json;
+    try {
+      event = await this.call('GET', `/events/${eventId}`);
+    } catch (error) {
+      if (error instanceof GatewayError && error.code === 'resource_error') {
+        throw new InvalidWebhookSignatureError('Unknown Culqi event');
+      }
+      throw error;
+    }
     const type = typeof event.type === 'string' ? event.type : 'unknown';
-    const eventId =
-      typeof event.id === 'string' && event.id
-        ? event.id
-        : `sha256:${createHash('sha256').update(rawBody).digest('hex')}`;
     let data: unknown = event.data;
     if (typeof data === 'string') {
       try {
@@ -136,20 +152,10 @@ export class CulqiGateway implements PaymentGateway {
     const d = (data && typeof data === 'object' ? data : {}) as Json;
 
     if (d.object === 'refund' && typeof d.id === 'string') {
-      return {
-        kind: 'refund',
-        eventId,
-        type,
-        refund: {
-          providerRef: d.id,
-          paymentProviderRef: text(d.charge_id),
-          status: 'SUCCEEDED',
-          amountCents: Number(d.amount ?? 0),
-        },
-      };
+      return { kind: 'refund', eventId, type, refund: this.fromRefund(d) };
     }
     if (d.object === 'charge' && typeof d.id === 'string') {
-      // No se confía en el cuerpo: se consulta el cargo real.
+      // El cargo se relee para tener su estado actual, no el del evento.
       const payment = await this.retrievePayment(d.id);
       if (payment.status === 'PENDING' && /fail/i.test(type)) {
         payment.status = 'FAILED';
@@ -157,24 +163,6 @@ export class CulqiGateway implements PaymentGateway {
       return { kind: 'payment', eventId, type, payment };
     }
     return { kind: 'ignored', eventId, type };
-  }
-
-  private verifySignature(
-    rawBody: Buffer,
-    header: string | string[] | undefined,
-  ): void {
-    const received = (Array.isArray(header) ? header[0] : header)
-      ?.replace(/^sha256=/, '')
-      .toLowerCase();
-    if (!received) throw new InvalidWebhookSignatureError('Missing signature');
-    const expected = createHmac('sha256', this.options.webhookSecret)
-      .update(rawBody)
-      .digest('hex');
-    const a = Buffer.from(received);
-    const b = Buffer.from(expected);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) {
-      throw new InvalidWebhookSignatureError('Invalid signature');
-    }
   }
 
   private fromCharge(
@@ -218,7 +206,11 @@ export class CulqiGateway implements PaymentGateway {
         action: { type: 'THREE_DS', parameters: {} },
       };
     }
-    if (charge.paid === true || outcome.type === 'venta_exitosa') {
+    if (
+      charge.paid === true ||
+      outcome.type === 'venta_exitosa' ||
+      charge.response_code === 'venta_exitosa'
+    ) {
       return { ...base, status: 'SUCCEEDED', method: 'CARD' };
     }
     return {
@@ -270,11 +262,11 @@ export class CulqiGateway implements PaymentGateway {
       const declined = json.type === 'card_error';
       throw new GatewayError(
         text(json.user_message) || text(json.merchant_message) || 'Culqi error',
-        typeof json.decline_code === 'string'
-          ? json.decline_code
-          : typeof json.code === 'string'
-            ? json.code
-            : undefined,
+        // `type` (p. ej. `resource_error` en un 404) solo si no hay código.
+        text(json.decline_code) ||
+          text(json.code) ||
+          text(json.type) ||
+          undefined,
         declined,
       );
     }

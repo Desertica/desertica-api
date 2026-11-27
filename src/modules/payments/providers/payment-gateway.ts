@@ -71,6 +71,8 @@ export interface CreatePaymentInput {
   /** Token de Culqi.js (nunca un número de tarjeta). */
   token?: string;
   email?: string;
+  /** `Culqi3DS.generateDevice()`: el mismo en el cargo y en su reintento 3DS. */
+  deviceId?: string;
   /** Parámetros que devolvió la autenticación 3DS en el navegador (Culqi). */
   authentication3DS?: Record<string, unknown>;
 }

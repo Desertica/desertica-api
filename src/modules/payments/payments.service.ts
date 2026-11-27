@@ -37,6 +37,7 @@ export interface CulqiInput {
   email: string;
   /** Pago `REQUIRES_ACTION` que se continúa con la autenticación 3DS. */
   paymentId?: string;
+  deviceId?: string;
   authentication3DS?: Record<string, unknown>;
 }
 
@@ -347,6 +348,7 @@ export class PaymentsService {
           description,
           token: culqi.token,
           email: culqi.email,
+          deviceId: culqi.deviceId,
           authentication3DS: culqi.authentication3DS,
         });
       } catch (error) {
