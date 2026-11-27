@@ -31,7 +31,7 @@ describe('Reembolsos y disputas (e2e)', () => {
   let admin: TestSession;
   let operator: TestSession;
   let finance: TestSession;
-  let stripe: FakeGateway;
+  let culqi: FakeGateway;
   let fx: CatalogFixture;
   const storage = new MemoryDocumentStorage();
   const alertLog: { code: string; bookingId?: string }[] = [];
@@ -53,7 +53,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         }),
     );
     prisma = app.get(PrismaService);
-    stripe = app.get(GatewayRegistry).get('STRIPE') as FakeGateway;
+    culqi = app.get(GatewayRegistry).get('CULQI') as FakeGateway;
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
     finance = await loginAs(app, 'finance');
@@ -63,8 +63,8 @@ describe('Reembolsos y disputas (e2e)', () => {
     await app.close();
   });
   afterEach(() => {
-    stripe.failRefunds = false;
-    stripe.refundFailureCode = 'refund_failed';
+    culqi.failRefunds = false;
+    culqi.refundFailureCode = 'refund_failed';
   });
 
   const refund = (
@@ -103,7 +103,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         requestedBy: admin.user.email,
       });
       expect(
-        stripe.refunds.some(
+        culqi.refunds.some(
           (r) =>
             r.paymentProviderRef === p.providerRef && r.amountCents === 5000,
         ),
@@ -156,7 +156,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       const b = await makeBooking(app, fx);
       const p = await recordPaid(app, b);
       const key = `k-${rand()}${rand()}`;
-      const before = stripe.refunds.length;
+      const before = culqi.refunds.length;
       const a = await refund(
         admin,
         p.id,
@@ -170,7 +170,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         key,
       ).expect(201);
       expect((again.body as Body).id).toBe((a.body as Body).id);
-      expect(stripe.refunds.length).toBe(before + 1);
+      expect(culqi.refunds.length).toBe(before + 1);
       expect((await payment(p.id)).refundedCents).toBe(3000);
       await refund(admin, p.id, { amountCents: 4000, reason: 'x' }, key).expect(
         422,
@@ -209,13 +209,13 @@ describe('Reembolsos y disputas (e2e)', () => {
       const failed = await prisma.payment.create({
         data: {
           bookingId: b.id,
-          provider: 'STRIPE',
+          provider: 'CULQI',
           method: 'CARD',
           kind: 'FULL',
           status: 'FAILED',
           currency: 'USD',
           amountCents: 100,
-          providerRef: `pi_f_${rand()}`,
+          providerRef: `chr_f_${rand()}`,
         },
       });
       await refund(admin, failed.id, { amountCents: 100, reason: 'x' }).expect(
@@ -226,8 +226,17 @@ describe('Reembolsos y disputas (e2e)', () => {
     it('keeps the refund pending when the gateway is unreachable and fails it when it refuses', async () => {
       const b = await makeBooking(app, fx);
       const p = await recordPaid(app, b);
-      stripe.failRefunds = true;
-      stripe.refundFailureCode = 'unreachable';
+      // El cargo existe y muestra 0 devuelto: el reintento es seguro.
+      culqi.payments.set(p.providerRef!, {
+        providerRef: p.providerRef!,
+        status: 'SUCCEEDED',
+        amountCents: p.amountCents,
+        currency: 'USD',
+        metadata: {},
+        refundedCents: 0,
+      });
+      culqi.failRefunds = true;
+      culqi.refundFailureCode = 'unreachable';
       const pending = await refund(admin, p.id, {
         amountCents: 1000,
         reason: 'x',
@@ -235,7 +244,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       expect(pending.body).toMatchObject({ status: 'PENDING' });
       expect((await payment(p.id)).refundedCents).toBe(0);
 
-      stripe.failRefunds = false;
+      culqi.failRefunds = false;
       await app.get(RefundSweeper).runOnce();
       expect(
         await prisma.refund.findUniqueOrThrow({
@@ -244,8 +253,8 @@ describe('Reembolsos y disputas (e2e)', () => {
       ).toMatchObject({ status: 'SUCCEEDED' });
       expect((await payment(p.id)).refundedCents).toBe(1000);
 
-      stripe.failRefunds = true; // rechazo definitivo
-      stripe.refundFailureCode = 'refund_failed';
+      culqi.failRefunds = true; // rechazo definitivo
+      culqi.refundFailureCode = 'refund_failed';
       const refused = await refund(admin, p.id, {
         amountCents: 500,
         reason: 'x',
@@ -270,7 +279,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         refundedCents: 4000,
       });
       expect(
-        stripe.refunds.every((r) => r.paymentProviderRef !== p.providerRef),
+        culqi.refunds.every((r) => r.paymentProviderRef !== p.providerRef),
       ).toBe(true);
     });
 
@@ -378,9 +387,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       });
       expect((await booking(b.id)).refundedCents).toBe(15000);
       expect(
-        stripe.refunds.filter(
-          (r) => r.paymentProviderRef === newer.providerRef,
-        ),
+        culqi.refunds.filter((r) => r.paymentProviderRef === newer.providerRef),
       ).toHaveLength(1);
     });
 
@@ -400,7 +407,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         app.get(RefundSweeper).runOnce(),
       ]);
       expect(
-        stripe.refunds.filter((r) => r.paymentProviderRef === p.providerRef),
+        culqi.refunds.filter((r) => r.paymentProviderRef === p.providerRef),
       ).toHaveLength(1);
       expect((await payment(p.id)).refundedCents).toBe(2000);
     });
@@ -431,8 +438,8 @@ describe('Reembolsos y disputas (e2e)', () => {
       const b = await makeBooking(app, fx);
       const p = await recordPaid(app, b);
       const event = refundEvent(p, 'SUCCEEDED', `re_ext_${rand()}`, 7000);
-      await postWebhook(app, 'stripe', event).expect(200);
-      await postWebhook(app, 'stripe', event).expect(200); // duplicado
+      await postWebhook(app, 'culqi', event).expect(200);
+      await postWebhook(app, 'culqi', event).expect(200); // duplicado
       const rows = await prisma.refund.findMany({ where: { paymentId: p.id } });
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -454,12 +461,12 @@ describe('Reembolsos y disputas (e2e)', () => {
       const left = p.amountCents - 7000;
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'SUCCEEDED', `re_ext_${rand()}`, 7000),
       ).expect(200);
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'SUCCEEDED', `re_ext_${rand()}`, left + 1),
       ).expect(200);
       expect(await prisma.refund.count({ where: { paymentId: p.id } })).toBe(1);
@@ -475,7 +482,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         [1, 2, 3].map(() =>
           postWebhook(
             app,
-            'stripe',
+            'culqi',
             refundEvent(p, 'SUCCEEDED', ref, 7000),
           ).expect(200),
         ),
@@ -500,7 +507,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       });
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'PENDING', pendingRef, 3000),
       ).expect(200);
       expect(
@@ -509,19 +516,19 @@ describe('Reembolsos y disputas (e2e)', () => {
       ).toBe('PENDING');
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'SUCCEEDED', pendingRef, 3000),
       ).expect(200);
       expect((await payment(p.id)).refundedCents).toBe(3000);
       // Un "pending" atrasado no desmonta lo cerrado, y otro "succeeded" no suma dos veces.
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'PENDING', pendingRef, 3000),
       ).expect(200);
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'SUCCEEDED', pendingRef, 3000),
       ).expect(200);
       expect((await payment(p.id)).refundedCents).toBe(3000);
@@ -543,7 +550,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       });
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'FAILED', row.providerRef!, 5000),
       ).expect(200);
       expect(await payment(p.id)).toMatchObject({
@@ -563,7 +570,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       const p = await recordPaid(app, b);
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         refundEvent(p, 'SUCCEEDED', 're_bad', 100),
         true,
       ).expect(400);
@@ -600,8 +607,8 @@ describe('Reembolsos y disputas (e2e)', () => {
       const p = await recordPaid(app, b);
       const ref = `dp_${rand()}${rand()}`;
       const event = disputeEvent(p, 'OPEN', { providerRef: ref });
-      await postWebhook(app, 'stripe', event).expect(200);
-      await postWebhook(app, 'stripe', event).expect(200); // duplicado
+      await postWebhook(app, 'culqi', event).expect(200);
+      await postWebhook(app, 'culqi', event).expect(200); // duplicado
 
       const rows = await prisma.dispute.findMany({
         where: { paymentId: p.id },
@@ -618,7 +625,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         paymentId: p.id,
         bookingId: b.id,
         bookingReference: b.reference,
-        provider: 'STRIPE',
+        provider: 'CULQI',
         providerRef: ref,
         status: 'OPEN',
         reason: 'fraudulent',
@@ -652,18 +659,18 @@ describe('Reembolsos y disputas (e2e)', () => {
       const ref = `dp_${rand()}${rand()}`;
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p, 'OPEN', { providerRef: ref }),
       ).expect(200);
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p, 'WON', { providerRef: ref }),
       ).expect(200);
       expect(await payment(p.id)).toMatchObject({ status: 'SUCCEEDED' });
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p, 'OPEN', { providerRef: ref }),
       ).expect(200);
       const row = await prisma.dispute.findFirstOrThrow({
@@ -678,12 +685,12 @@ describe('Reembolsos y disputas (e2e)', () => {
       const ref2 = `dp_${rand()}${rand()}`;
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p2, 'OPEN', { providerRef: ref2 }),
       ).expect(200);
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p2, 'LOST', { providerRef: ref2 }),
       ).expect(200);
       expect((await payment(p2.id)).status).toBe('DISPUTED'); // el dinero se perdió
@@ -696,7 +703,7 @@ describe('Reembolsos y disputas (e2e)', () => {
       const ref = `dp_${rand()}${rand()}`;
       await postWebhook(
         app,
-        'stripe',
+        'culqi',
         disputeEvent(p, 'OPEN', { providerRef: ref }),
       ).expect(200);
       const row = await prisma.dispute.findFirstOrThrow({
@@ -858,7 +865,7 @@ describe('Reembolsos y disputas (e2e)', () => {
         },
       });
       const ref = `dp_${rand()}${rand()}`;
-      await postWebhook(app, 'stripe', {
+      await postWebhook(app, 'culqi', {
         kind: 'dispute',
         eventId: evt(),
         type: 'charge.dispute.created',

@@ -86,14 +86,14 @@ export async function recordPaid(
   app: INestApplication<App>,
   booking: DirectBooking,
   over: {
-    provider?: 'STRIPE' | 'CULQI' | 'MANUAL';
+    provider?: 'CULQI' | 'MANUAL';
     amountCents?: number;
     kind?: 'FULL' | 'DEPOSIT' | 'BALANCE';
   } = {},
 ) {
   const prisma = app.get(PrismaService);
   const amountCents = over.amountCents ?? booking.total;
-  const provider = over.provider ?? 'STRIPE';
+  const provider = over.provider ?? 'CULQI';
   const payment = await prisma.payment.create({
     data: {
       bookingId: booking.id,
@@ -103,10 +103,7 @@ export async function recordPaid(
       status: 'SUCCEEDED',
       currency: booking.currency,
       amountCents,
-      providerRef:
-        provider === 'MANUAL'
-          ? null
-          : `${provider === 'STRIPE' ? 'pi' : 'chr'}_t_${rand()}${rand()}`,
+      providerRef: provider === 'MANUAL' ? null : `chr_t_${rand()}${rand()}`,
       paidAt: new Date(),
     },
   });
@@ -120,7 +117,7 @@ export async function recordPaid(
 /** Envía un webhook simulado (firmado salvo `tamper`). */
 export function postWebhook(
   app: INestApplication<App>,
-  provider: 'stripe' | 'culqi',
+  provider: 'culqi',
   event: GatewayEvent,
   tamper = false,
 ) {

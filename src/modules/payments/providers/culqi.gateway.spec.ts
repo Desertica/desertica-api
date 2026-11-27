@@ -114,13 +114,24 @@ describe('CulqiGateway (local server)', () => {
         }
         if (req.method === 'GET' && req.url?.startsWith('/v2/events/')) {
           const found = events[req.url.split('/').pop()!];
-          if (!found) {
-            res.statusCode = 404;
+          if (req.headers.authorization !== 'Bearer sk_test_x') {
+            res.statusCode = 401;
             return res.end(
               JSON.stringify({
                 object: 'error',
-                type: 'resource_error',
-                merchant_message: 'No existe el evento',
+                type: 'authentication_error',
+                merchant_message: 'Ruta inválida',
+              }),
+            );
+          }
+          if (!found) {
+            // Lo que responde Culqi real a un id bien formado que no existe.
+            res.statusCode = 400;
+            return res.end(
+              JSON.stringify({
+                object: 'error',
+                type: 'parameter_error',
+                merchant_message: 'No existe el evento que intentas consultar',
               }),
             );
           }
@@ -257,22 +268,22 @@ describe('CulqiGateway (local server)', () => {
 
     it('reads the event back from Culqi and re-reads the charge instead of trusting the body', async () => {
       await gateway().createPayment(input());
-      events.evt_test_c1 = {
+      events.evt_test_c100000000000000 = {
         object: 'event',
-        id: 'evt_test_c1',
+        id: 'evt_test_c100000000000000',
         type: 'charge.creation.succeeded',
         data: JSON.stringify({ object: 'charge', id: 'chr_test_1' }),
       };
       const parsed = await post({
         object: 'event',
-        id: 'evt_test_c1',
+        id: 'evt_test_c100000000000000',
         // Lo que viene en el cuerpo no cuenta: ni el tipo ni el monto.
         type: 'charge.creation.failed',
         data: JSON.stringify({ object: 'charge', id: 'chr_x', amount: 1 }),
       });
       expect(parsed).toMatchObject({
         kind: 'payment',
-        eventId: 'evt_test_c1',
+        eventId: 'evt_test_c100000000000000',
         type: 'charge.creation.succeeded',
         payment: {
           providerRef: 'chr_test_1',
@@ -281,7 +292,7 @@ describe('CulqiGateway (local server)', () => {
         },
       });
       expect(seen.map((r) => `${r.method} ${r.url}`)).toContain(
-        'GET /v2/events/evt_test_c1',
+        'GET /v2/events/evt_test_c100000000000000',
       );
       expect(seen.at(-1)?.headers.authorization).toBe('Bearer sk_test_x');
     });
@@ -300,24 +311,42 @@ describe('CulqiGateway (local server)', () => {
       ).rejects.toBeInstanceOf(InvalidWebhookSignatureError);
       await expect(
         post({
-          id: 'evt_test_forged',
+          id: 'evt_test_forged0000000000',
           data: { object: 'refund', id: 'ref_9' },
         }),
       ).rejects.toBeInstanceOf(InvalidWebhookSignatureError);
     });
 
+    it('rejects an id that is not 25 characters without asking Culqi', async () => {
+      const before = seen.length;
+      for (const id of ['evt_test_noexiste123', 'evt_test_AAAAAAAAAAAAAAAAA']) {
+        await expect(post({ id })).rejects.toBeInstanceOf(
+          InvalidWebhookSignatureError,
+        );
+      }
+      expect(seen.length).toBe(before);
+    });
+
+    it('does not hide a wrong secret key as a bad webhook', async () => {
+      await expect(
+        gateway({ secretKey: 'sk_test_wrong' }).parseWebhook(
+          Buffer.from(JSON.stringify({ id: 'evt_test_AAAAAAAAAAAAAAAA' })),
+        ),
+      ).rejects.toMatchObject({ code: 'authentication_error' });
+    });
+
     it('is unavailable without a secret key', async () => {
       await expect(
         gateway({ secretKey: '' }).parseWebhook(
-          Buffer.from(JSON.stringify({ id: 'evt_test_x' })),
+          Buffer.from(JSON.stringify({ id: 'evt_test_x000000000000000' })),
         ),
       ).rejects.toBeInstanceOf(GatewayNotConfiguredError);
     });
 
     it('normalizes refund events from the event Culqi returns and ignores the rest', async () => {
-      events.evt_test_r = {
+      events.evt_test_r000000000000000 = {
         object: 'event',
-        id: 'evt_test_r',
+        id: 'evt_test_r000000000000000',
         type: 'refund.creation.succeeded',
         data: {
           object: 'refund',
@@ -327,7 +356,9 @@ describe('CulqiGateway (local server)', () => {
           status: 'Completa',
         },
       };
-      expect(await post({ id: 'evt_test_r', data: {} })).toMatchObject({
+      expect(
+        await post({ id: 'evt_test_r000000000000000', data: {} }),
+      ).toMatchObject({
         kind: 'refund',
         refund: {
           providerRef: 'ref_9',
@@ -336,15 +367,15 @@ describe('CulqiGateway (local server)', () => {
           status: 'SUCCEEDED',
         },
       });
-      events.evt_test_o = {
+      events.evt_test_o000000000000000 = {
         object: 'event',
-        id: 'evt_test_o',
+        id: 'evt_test_o000000000000000',
         type: 'order.status.changed',
         data: '{"object":"order","id":"ord_test_1"}',
       };
-      expect(await post({ id: 'evt_test_o' })).toMatchObject({
+      expect(await post({ id: 'evt_test_o000000000000000' })).toMatchObject({
         kind: 'ignored',
-        eventId: 'evt_test_o',
+        eventId: 'evt_test_o000000000000000',
       });
     });
   });

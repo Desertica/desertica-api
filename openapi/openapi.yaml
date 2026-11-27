@@ -351,30 +351,6 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/PublicBooking' }
         '401': { $ref: '#/components/responses/Error' }
-  /public/bookings/{reference}/payments/stripe-intent:
-    post:
-      operationId: createBookingStripeIntent
-      tags: [Public]
-      summary: Crear un PaymentIntent de Stripe (USD)
-      security:
-        - bookingToken: []
-      parameters:
-        - $ref: '#/components/parameters/Reference'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
-      responses:
-        '201':
-          description: Intent creado
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/StripeIntent' }
-        '409': { $ref: '#/components/responses/Error' }
-        '422': { $ref: '#/components/responses/Error' }
-        '502': { $ref: '#/components/responses/Error' }
   /public/bookings/{reference}/payments/culqi-charge:
     post:
       operationId: createBookingCulqiCharge
@@ -415,25 +391,6 @@ paths:
               schema: { $ref: '#/components/schemas/PaymentLinkInfo' }
         '404': { $ref: '#/components/responses/Error' }
         '410': { $ref: '#/components/responses/Error' }
-  /public/payment-links/{token}/stripe-intent:
-    post:
-      operationId: createLinkStripeIntent
-      tags: [Public]
-      summary: Crear un PaymentIntent para un enlace de pago
-      security: []
-      parameters:
-        - $ref: '#/components/parameters/LinkToken'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      responses:
-        '201':
-          description: Intent creado
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/StripeIntent' }
-        '404': { $ref: '#/components/responses/Error' }
-        '409': { $ref: '#/components/responses/Error' }
-        '410': { $ref: '#/components/responses/Error' }
-        '502': { $ref: '#/components/responses/Error' }
   /public/payment-links/{token}/culqi-charge:
     post:
       operationId: createLinkCulqiCharge
@@ -678,30 +635,6 @@ paths:
                     items: { $ref: '#/components/schemas/LegalDocument' }
 
   # ---------------------------------------------------------------- Webhooks
-  /webhooks/stripe:
-    post:
-      operationId: receiveStripeWebhook
-      tags: [Webhooks]
-      summary: Eventos de Stripe
-      description: |
-        Valida `Stripe-Signature` sobre el cuerpo crudo (400 si falta o no coincide), guarda el evento en
-        `WebhookEvent` (idempotente por `eventId`) y responde 200 aunque ya estuviera procesado. Eventos usados:
-        `payment_intent.succeeded|payment_failed|canceled|requires_action`, `refund.created|updated|failed` y
-        `charge.dispute.created|updated|closed|funds_withdrawn|funds_reinstated`. 503 si el webhook no está configurado.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { type: object, additionalProperties: true }
-      responses:
-        '200': { description: Recibido }
-        '400': { $ref: '#/components/responses/Error' }
-        '409':
-          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara) o de un pago que aún no existe aquí. No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
   /webhooks/culqi:
     post:
       operationId: receiveCulqiWebhook
@@ -721,7 +654,7 @@ paths:
         '200': { description: Recibido }
         '400': { $ref: '#/components/responses/Error' }
         '409':
-          description: Evento fuera de orden; ver `receiveStripeWebhook`.
+          description: Evento fuera de orden (un reembolso o una disputa llegó antes de que el cobro se acreditara) o de un pago que aún no existe aquí. No se guarda como procesado; la pasarela lo reenvía y entonces se aplica.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2577,7 +2510,7 @@ paths:
       summary: Reporte de ventas
       description: |
         Mismas medidas que `sales` del panel, agrupadas por `groupBy`: `day` (fecha de Lima), `tour` (slug
-        del tour) o `provider` (`STRIPE`, `CULQI` o `MANUAL`). Con `format=csv` devuelve el mismo contenido
+        del tour) o `provider` (`CULQI` o `MANUAL`). Con `format=csv` devuelve el mismo contenido
         como `text/csv` (columnas `key,currency,grossCents,refundedCents,bookings`); las celdas que
         empezarían con `=`, `+`, `-`, `@`, tabulación o retorno se prefijan con `'` para que una hoja de
         cálculo no las evalúe como fórmula.
@@ -2728,7 +2661,7 @@ components:
       enum: [PENDING_PAYMENT, CONFIRMED, COMPLETED, CANCELLED, NO_SHOW]
     PaymentProvider:
       type: string
-      enum: [STRIPE, CULQI, MANUAL]
+      enum: [CULQI, MANUAL]
     PaymentMethod:
       type: string
       enum: [CARD, WALLET, YAPE, CASH, TRANSFER, OTHER]
@@ -3220,7 +3153,7 @@ components:
         type: object
         required: [provider, kinds]
         properties:
-          provider: { type: string, enum: [STRIPE, CULQI] }
+          provider: { type: string, enum: [CULQI] }
           kinds:
             type: array
             items: { $ref: '#/components/schemas/PaymentKind' }
@@ -3236,11 +3169,6 @@ components:
           $ref: '#/components/schemas/PaymentOptions'
 
     # ------------------------------------------------------------- Pagos
-    CreatePaymentRequest:
-      type: object
-      required: [kind]
-      properties:
-        kind: { $ref: '#/components/schemas/PaymentKind' }
     CulqiChargeRequest:
       type: object
       required: [kind, token, email]
@@ -3260,15 +3188,6 @@ components:
           type: object
           additionalProperties: true
           description: Parámetros que devolvió la autenticación 3DS en el navegador (Culqi3DS).
-    StripeIntent:
-      type: object
-      required: [paymentId, clientSecret, publishableKey, amountCents, currency]
-      properties:
-        paymentId: { type: string, format: uuid }
-        clientSecret: { type: string }
-        publishableKey: { type: string }
-        amountCents: { type: integer }
-        currency: { type: string, enum: [USD] }
     CulqiChargeResult:
       type: object
       required: [paymentId, status]
@@ -3309,7 +3228,7 @@ components:
         expiresAt: { type: string, format: date-time }
         paymentOptions:
           type: array
-          items: { type: string, enum: [STRIPE, CULQI] }
+          items: { type: string, enum: [CULQI] }
     Payment:
       type: object
       required: [id, bookingId, bookingReference, provider, method, kind, status, currency, amountCents]

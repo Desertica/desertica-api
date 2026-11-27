@@ -192,10 +192,6 @@ export const envSchema = Joi.object({
     .valid('live', 'fake')
     .default('live')
     .when('NODE_ENV', { is: 'production', then: Joi.valid('live') }),
-  /** Stripe cobra solo USD. Sin claves, sus operaciones responden 503. */
-  STRIPE_SECRET_KEY: Joi.string().allow('').default(''),
-  STRIPE_PUBLISHABLE_KEY: Joi.string().allow('').default(''),
-  STRIPE_WEBHOOK_SECRET: Joi.string().allow('').default(''),
   /** Culqi cobra USD o PEN. */
   CULQI_SECRET_KEY: Joi.string().allow('').default(''),
   CULQI_PUBLIC_KEY: Joi.string().allow('').default(''),
@@ -282,9 +278,6 @@ export interface EnvVars {
   CMS_CACHE_TTL_SECONDS: number;
   CMS_WEBHOOK_SECRET: string;
   PAYMENT_GATEWAY_MODE: 'live' | 'fake';
-  STRIPE_SECRET_KEY: string;
-  STRIPE_PUBLISHABLE_KEY: string;
-  STRIPE_WEBHOOK_SECRET: string;
   CULQI_SECRET_KEY: string;
   CULQI_PUBLIC_KEY: string;
   CULQI_API_URL: string;
