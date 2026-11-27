@@ -23,7 +23,8 @@ export const FAKE_WEBHOOK_SECRET = 'fake-webhook-secret';
  * (ver `signFakeEvent`).
  */
 export class FakeGateway implements PaymentGateway {
-  readonly currencies: readonly Currency[];
+  readonly provider = 'CULQI' as const;
+  readonly currencies: readonly Currency[] = ['USD', 'PEN'];
   readonly payments = new Map<string, GatewayPayment>();
   readonly refunds: GatewayRefund[] = [];
   /** Cuántas veces se llamó a `createPayment` (comprueba la idempotencia). */
@@ -33,10 +34,6 @@ export class FakeGateway implements PaymentGateway {
   refundFailureCode = 'refund_failed';
   /** El reembolso se aplica pero la respuesta se pierde (`unreachable`): el caso ambiguo. */
   loseRefundResponse = false;
-
-  constructor(readonly provider: 'STRIPE' | 'CULQI') {
-    this.currencies = provider === 'STRIPE' ? ['USD'] : ['USD', 'PEN'];
-  }
 
   publicKey(): string {
     return `pk_fake_${this.provider.toLowerCase()}`;
@@ -58,17 +55,6 @@ export class FakeGateway implements PaymentGateway {
       currency: input.currency,
       metadata,
     };
-    if (this.provider === 'STRIPE') {
-      const providerRef = `pi_fake_${randomUUID()}`;
-      const payment: GatewayPayment = {
-        ...base,
-        providerRef,
-        status: 'PENDING',
-        clientSecret: `${providerRef}_secret_fake`,
-      };
-      this.payments.set(providerRef, payment);
-      return Promise.resolve(payment);
-    }
     const providerRef = `chr_fake_${randomUUID()}`;
     let payment: GatewayPayment;
     switch (input.token) {

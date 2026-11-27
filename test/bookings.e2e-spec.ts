@@ -304,7 +304,6 @@ describe('Reservas (e2e)', () => {
         body.booking.waivers.filter((w: Body) => w.passengerName),
       ).toHaveLength(2);
       expect(body.paymentOptions).toEqual([
-        { provider: 'STRIPE', kinds: ['DEPOSIT'] },
         { provider: 'CULQI', kinds: ['DEPOSIT'] },
       ]);
 
@@ -1231,7 +1230,7 @@ describe('Reservas (e2e)', () => {
         reference,
         kind: 'DEPOSIT',
         amountCents: 6000,
-        paymentOptions: ['STRIPE', 'CULQI'],
+        paymentOptions: ['CULQI'],
       });
       await http().get('/api/public/payment-links/unknown').expect(404);
       await prisma.paymentLink.update({
@@ -2433,11 +2432,10 @@ describe('Reservas (e2e)', () => {
         expect((await view()).paymentOptions).toEqual([]);
       });
 
-      it('offers Stripe too in USD and nothing once cancelled', async () => {
+      it('offers Culqi in USD and nothing once cancelled', async () => {
         const dep = await fx.departure();
         const created = await webBooking(dep.id);
         expect(created.body.paymentOptions).toEqual([
-          { provider: 'STRIPE', kinds: ['FULL'] },
           { provider: 'CULQI', kinds: ['FULL'] },
         ]);
         await http()

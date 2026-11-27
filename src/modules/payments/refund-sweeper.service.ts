@@ -59,7 +59,7 @@ export class RefundSweeper
           where: {
             status: 'PENDING',
             providerRef: null,
-            payment: { provider: { in: ['STRIPE', 'CULQI'] } },
+            payment: { provider: 'CULQI' },
           },
           orderBy: { createdAt: 'asc' },
           select: { id: true },

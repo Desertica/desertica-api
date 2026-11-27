@@ -26,19 +26,13 @@ import { rawBodyOf } from './raw-body';
 export class WebhooksController {
   constructor(private readonly events: PaymentEventsService) {}
 
-  @Post('stripe')
-  @HttpCode(200)
-  stripe(@Req() req: Request) {
-    return this.receive('STRIPE', req);
-  }
-
   @Post('culqi')
   @HttpCode(200)
   culqi(@Req() req: Request) {
     return this.receive('CULQI', req);
   }
 
-  private async receive(provider: 'STRIPE' | 'CULQI', req: Request) {
+  private async receive(provider: 'CULQI', req: Request) {
     const raw = rawBodyOf(req);
     if (!raw) throw new BadRequestException('Expected a JSON body');
     try {

@@ -27,8 +27,6 @@ import {
   type GatewayPayment,
 } from './providers/payment-gateway';
 
-type Gateway = 'STRIPE' | 'CULQI';
-
 /** Un cobro abierto de un enlace bloquea otro intento durante este tiempo. */
 const LINK_IN_PROGRESS_MS = 10 * 60_000;
 const MAX_3DS_BYTES = 4_000;
@@ -43,7 +41,7 @@ export interface CulqiInput {
 }
 
 interface StartParams {
-  provider: Gateway;
+  provider: 'CULQI';
   /** Reserva (flujo de la reserva) o enlace (flujo del enlace de pago). */
   booking?: { id: string; kind: PaymentKind };
   linkToken?: string;
@@ -75,18 +73,6 @@ export class PaymentsService {
 
   // ------------------------------------------------------------ Entradas
 
-  async bookingStripeIntent(
-    bookingId: string,
-    kind: PaymentKind,
-    idempotencyKey?: string,
-  ) {
-    return this.start({
-      provider: 'STRIPE',
-      booking: { id: bookingId, kind },
-      idempotencyKey,
-    });
-  }
-
   async bookingCulqiCharge(
     bookingId: string,
     kind: PaymentKind,
@@ -99,10 +85,6 @@ export class PaymentsService {
       culqi,
       idempotencyKey,
     });
-  }
-
-  async linkStripeIntent(linkToken: string, idempotencyKey?: string) {
-    return this.start({ provider: 'STRIPE', linkToken, idempotencyKey });
   }
 
   async linkCulqiCharge(
@@ -124,13 +106,6 @@ export class PaymentsService {
         throw new UnprocessableEntityException(
           'authentication3DS is too large',
         );
-      }
-    }
-    if (params.provider === 'STRIPE') {
-      try {
-        gateway.publicKey();
-      } catch (error) {
-        throw this.mapGatewayError(error);
       }
     }
 
@@ -291,8 +266,8 @@ export class PaymentsService {
 
   /**
    * Fase 2: habla con la pasarela (una sola vez por pago) y arma la respuesta.
-   * Sin transacción abierta durante la red: Stripe deduplica por `idempotencyKey`
-   * y Culqi se reclama con un UPDATE condicional (ver `claimCharge`).
+   * Sin transacción abierta durante la red: el cargo de Culqi se reclama con un
+   * UPDATE condicional (ver `claimCharge`).
    */
   private async drive(paymentId: string, params: StartParams) {
     const gateway = this.gateways.get(params.provider);
@@ -301,37 +276,6 @@ export class PaymentsService {
       include: { booking: { select: { reference: true } } },
     });
     const description = `Desertica ${payment.booking.reference}`;
-
-    if (params.provider === 'STRIPE') {
-      let gw: GatewayPayment;
-      try {
-        gw = payment.providerRef
-          ? await gateway.retrievePayment(payment.providerRef)
-          : await gateway.createPayment({
-              paymentId,
-              bookingReference: payment.booking.reference,
-              amountCents: payment.amountCents,
-              currency: payment.currency,
-              description,
-            });
-      } catch (error) {
-        await this.abandon(paymentId, error);
-        throw this.mapGatewayError(error);
-      }
-      if (!payment.providerRef) {
-        await this.prisma.payment.updateMany({
-          where: { id: paymentId, providerRef: null },
-          data: { providerRef: gw.providerRef },
-        });
-      }
-      return {
-        paymentId,
-        clientSecret: gw.clientSecret!,
-        publishableKey: gateway.publicKey(),
-        amountCents: payment.amountCents,
-        currency: 'USD' as const,
-      };
-    }
 
     const culqi = params.culqi!;
     const canCharge =

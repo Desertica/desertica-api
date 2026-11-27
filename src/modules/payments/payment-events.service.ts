@@ -50,7 +50,7 @@ export class PaymentEventsService {
 
   /** Punto de entrada del webhook: valida la firma y procesa. */
   async receive(
-    provider: 'STRIPE' | 'CULQI',
+    provider: 'CULQI',
     rawBody: Buffer,
     headers: Record<string, string | string[] | undefined>,
   ): Promise<{ duplicate: boolean }> {
@@ -118,13 +118,9 @@ export class PaymentEventsService {
     return { duplicate: false };
   }
 
-  /** Lo que se guarda del evento: nunca el `client_secret` de Stripe. */
+  /** El evento como JSON (las fechas pasan a texto). */
   private storable(event: GatewayEvent): Prisma.InputJsonValue {
-    const copy = JSON.parse(JSON.stringify(event)) as {
-      payment?: { clientSecret?: string };
-    };
-    if (copy.payment) delete copy.payment.clientSecret;
-    return copy;
+    return JSON.parse(JSON.stringify(event)) as Prisma.InputJsonValue;
   }
 
   private async apply(

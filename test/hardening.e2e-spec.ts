@@ -31,7 +31,6 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
   let admin: TestSession;
   let operator: TestSession;
   let finance: TestSession;
-  let stripe: FakeGateway;
   let culqi: FakeGateway;
   let fx: CatalogFixture;
   const alertLog: { code: string; bookingId?: string }[] = [];
@@ -54,7 +53,6 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     );
     prisma = app.get(PrismaService);
     const registry = app.get(GatewayRegistry);
-    stripe = registry.get('STRIPE') as FakeGateway;
     culqi = registry.get('CULQI') as FakeGateway;
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
@@ -66,8 +64,8 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     await app.close();
   });
   afterEach(() => {
-    stripe.failRefunds = false;
-    stripe.loseRefundResponse = false;
+    culqi.failRefunds = false;
+    culqi.loseRefundResponse = false;
     culqi.failRefunds = false;
     culqi.loseRefundResponse = false;
   });
@@ -77,16 +75,16 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
   const booking = (id: string) =>
     prisma.booking.findUniqueOrThrow({ where: { id } });
 
-  const stripeIntent = (b: DirectBooking, kind = 'FULL') =>
+  const pendingCharge = (b: DirectBooking, kind = 'FULL') =>
     http()
-      .post(`/api/public/bookings/${b.reference}/payments/stripe-intent`)
+      .post(`/api/public/bookings/${b.reference}/payments/culqi-charge`)
       .set('X-Booking-Token', b.token)
-      .send({ kind });
+      .send({ kind, token: 'tok_pending', email: 'ana@example.com' });
 
   const succeededEvent = (p: Body, eventId = evt()): GatewayEvent => ({
     kind: 'payment',
     eventId,
-    type: 'payment_intent.succeeded',
+    type: 'charge.creation.succeeded',
     payment: {
       providerRef: p.providerRef,
       status: 'SUCCEEDED',
@@ -100,12 +98,12 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
   describe('simultaneous payments', () => {
     it('credits a payment once when several events for it arrive at the same time', async () => {
       const b = await makeBooking(app, fx);
-      const intent = (await stripeIntent(b).expect(201)).body as Body;
+      const intent = (await pendingCharge(b).expect(201)).body as Body;
       const p = await payment(intent.paymentId);
       // Mismo cobro, ids de evento distintos (el caso que la idempotencia por evento no cubre).
       const results = await Promise.all(
         Array.from({ length: 6 }, () =>
-          postWebhook(app, 'stripe', succeededEvent(p)),
+          postWebhook(app, 'culqi', succeededEvent(p)),
         ),
       );
       expect(results.map((r) => r.status)).toEqual(Array(6).fill(200));
@@ -128,30 +126,30 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
 
     it('processes one delivery of the same event id when it is repeated at once', async () => {
       const b = await makeBooking(app, fx);
-      const intent = (await stripeIntent(b).expect(201)).body as Body;
+      const intent = (await pendingCharge(b).expect(201)).body as Body;
       const p = await payment(intent.paymentId);
       const event = succeededEvent(p);
       const results = await Promise.all(
-        Array.from({ length: 6 }, () => postWebhook(app, 'stripe', event)),
+        Array.from({ length: 6 }, () => postWebhook(app, 'culqi', event)),
       );
       expect(results.map((r) => r.status)).toEqual(Array(6).fill(200));
       expect((await booking(b.id)).paidCents).toBe(b.total);
       expect(
         await prisma.webhookEvent.count({
-          where: { provider: 'STRIPE', eventId: event.eventId },
+          where: { provider: 'CULQI', eventId: event.eventId },
         }),
       ).toBe(1);
     });
 
     it('refunds the excess when two payments for the same booking succeed at the same time', async () => {
       const b = await makeBooking(app, fx);
-      const [a, c] = await Promise.all([stripeIntent(b), stripeIntent(b)]);
+      const [a, c] = await Promise.all([pendingCharge(b), pendingCharge(b)]);
       const p1 = await payment((a.body as Body).paymentId);
       const p2 = await payment((c.body as Body).paymentId);
       expect(p1.id).not.toBe(p2.id);
       await Promise.all([
-        postWebhook(app, 'stripe', succeededEvent(p1)),
-        postWebhook(app, 'stripe', succeededEvent(p2)),
+        postWebhook(app, 'culqi', succeededEvent(p1)),
+        postWebhook(app, 'culqi', succeededEvent(p2)),
       ]).then((rs) => rs.forEach((r) => expect(r.status).toBe(200)));
       const row = await booking(b.id);
       expect(row).toMatchObject({
@@ -170,7 +168,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
         reason: 'overpayment',
       });
       expect(
-        stripe.refunds.filter((r) => r.providerRef === refunds[0].providerRef),
+        culqi.refunds.filter((r) => r.providerRef === refunds[0].providerRef),
       ).toHaveLength(1);
       expect(alerted(b.id, 'payment_overpaid')).toBe(1);
     });
@@ -185,7 +183,9 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
       const token = (created.body as Body).token as string;
       const res = await Promise.all(
         Array.from({ length: 4 }, () =>
-          http().post(`/api/public/payment-links/${token}/stripe-intent`),
+          http()
+            .post(`/api/public/payment-links/${token}/culqi-charge`)
+            .send({ token: 'tok_pending', email: 'a@example.com' }),
         ),
       );
       const statuses = res.map((r) => r.status).sort();
@@ -205,7 +205,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     it('refunds the same money only once', async () => {
       const b = await makeBooking(app, fx);
       const p = await recordPaid(app, b);
-      const before = stripe.refunds.length;
+      const before = culqi.refunds.length;
       const res = await Promise.all(
         Array.from({ length: 4 }, (_, i) =>
           http()
@@ -216,7 +216,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
         ),
       );
       expect(res.map((r) => r.status).sort()).toEqual([201, 409, 409, 409]);
-      expect(stripe.refunds.length).toBe(before + 1);
+      expect(culqi.refunds.length).toBe(before + 1);
       expect(await payment(p.id)).toMatchObject({
         status: 'REFUNDED',
         refundedCents: b.total,
@@ -251,7 +251,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
           status: 'PENDING',
         },
       });
-      const before = stripe.refunds.length;
+      const before = culqi.refunds.length;
       await Promise.all([
         app.get(RefundSweeper).runOnce(),
         app.get(RefundSweeper).runOnce(),
@@ -260,7 +260,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
           .set(admin.auth)
           .send({ amountCents: b.total - 5000, reason: 'resto' }),
       ]);
-      const total = stripe.refunds
+      const total = culqi.refunds
         .slice(before)
         .reduce((n, r) => n + r.amountCents, 0);
       expect(total).toBeLessThanOrEqual(b.total);
@@ -361,7 +361,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
   describe('out-of-order webhooks', () => {
     it('asks the gateway to resend a refund that arrives before the payment is confirmed', async () => {
       const b = await makeBooking(app, fx);
-      const intent = (await stripeIntent(b).expect(201)).body as Body;
+      const intent = (await pendingCharge(b).expect(201)).body as Body;
       const p = await payment(intent.paymentId);
       const refundEvent: GatewayEvent = {
         kind: 'refund',
@@ -374,17 +374,17 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
           amountCents: 2500,
         },
       };
-      await postWebhook(app, 'stripe', refundEvent).expect(409);
+      await postWebhook(app, 'culqi', refundEvent).expect(409);
       const stored = await prisma.webhookEvent.findFirstOrThrow({
-        where: { provider: 'STRIPE', eventId: refundEvent.eventId },
+        where: { provider: 'CULQI', eventId: refundEvent.eventId },
       });
       expect(stored.processedAt).toBeNull();
       expect(stored.error).toContain('not settled');
       expect(await prisma.refund.count({ where: { paymentId: p.id } })).toBe(0);
       expect((await booking(b.id)).refundedCents).toBe(0);
 
-      await postWebhook(app, 'stripe', succeededEvent(p)).expect(200);
-      await postWebhook(app, 'stripe', refundEvent).expect(200); // el reenvío ahora sí se aplica
+      await postWebhook(app, 'culqi', succeededEvent(p)).expect(200);
+      await postWebhook(app, 'culqi', refundEvent).expect(200); // el reenvío ahora sí se aplica
       expect(await payment(p.id)).toMatchObject({
         refundedCents: 2500,
         status: 'PARTIALLY_REFUNDED',
@@ -393,13 +393,13 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
         paidCents: b.total,
         refundedCents: 2500,
       });
-      await postWebhook(app, 'stripe', refundEvent).expect(200); // y no se aplica dos veces
+      await postWebhook(app, 'culqi', refundEvent).expect(200); // y no se aplica dos veces
       expect((await booking(b.id)).refundedCents).toBe(2500);
     });
 
     it('does the same for a dispute that arrives before the payment is confirmed', async () => {
       const b = await makeBooking(app, fx);
-      const intent = (await stripeIntent(b).expect(201)).body as Body;
+      const intent = (await pendingCharge(b).expect(201)).body as Body;
       const p = await payment(intent.paymentId);
       const disputeEvent = {
         kind: 'dispute',
@@ -415,12 +415,12 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
           evidenceDueAt: null,
         },
       } as unknown as GatewayEvent;
-      await postWebhook(app, 'stripe', disputeEvent).expect(409);
+      await postWebhook(app, 'culqi', disputeEvent).expect(409);
       expect(await prisma.dispute.count({ where: { paymentId: p.id } })).toBe(
         0,
       );
-      await postWebhook(app, 'stripe', succeededEvent(p)).expect(200);
-      await postWebhook(app, 'stripe', disputeEvent).expect(200);
+      await postWebhook(app, 'culqi', succeededEvent(p)).expect(200);
+      await postWebhook(app, 'culqi', disputeEvent).expect(200);
       expect(await payment(p.id)).toMatchObject({ status: 'DISPUTED' });
       expect(await prisma.dispute.count({ where: { paymentId: p.id } })).toBe(
         1,
@@ -430,19 +430,19 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     it('ignores a cancellation or a requires-action that arrives after the payment succeeded', async () => {
       const b = await makeBooking(app, fx);
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await postWebhook(app, 'stripe', succeededEvent(p)).expect(200);
+      await postWebhook(app, 'culqi', succeededEvent(p)).expect(200);
       for (const status of [
         'CANCELLED',
         'REQUIRES_ACTION',
         'FAILED',
         'PENDING',
       ] as const) {
-        await postWebhook(app, 'stripe', {
+        await postWebhook(app, 'culqi', {
           kind: 'payment',
           eventId: evt(),
-          type: 'payment_intent.x',
+          type: 'charge.x',
           payment: {
             providerRef: p.providerRef!,
             status,
@@ -462,12 +462,12 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
     it('lets a late success rescue a payment that an earlier failure had marked failed', async () => {
       const b = await makeBooking(app, fx);
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await postWebhook(app, 'stripe', {
+      await postWebhook(app, 'culqi', {
         kind: 'payment',
         eventId: evt(),
-        type: 'payment_intent.payment_failed',
+        type: 'charge.creation.failed',
         payment: {
           providerRef: p.providerRef!,
           status: 'FAILED',
@@ -477,7 +477,7 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
           metadata: { paymentId: p.id },
         },
       }).expect(200);
-      await postWebhook(app, 'stripe', succeededEvent(p)).expect(200);
+      await postWebhook(app, 'culqi', succeededEvent(p)).expect(200);
       expect(await payment(p.id)).toMatchObject({
         status: 'SUCCEEDED',
         failureCode: null,
@@ -616,11 +616,6 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
       const a = await makeBooking(app, fx);
       const other = await makeBooking(app, fx);
       await http()
-        .post(`/api/public/bookings/${a.reference}/payments/stripe-intent`)
-        .set('X-Booking-Token', other.token)
-        .send({ kind: 'FULL' })
-        .expect(401);
-      await http()
         .post(`/api/public/bookings/${a.reference}/payments/culqi-charge`)
         .set('X-Booking-Token', other.token)
         .send({ kind: 'FULL', token: 'tok_ok', email: 'a@example.com' })
@@ -643,9 +638,14 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
         })
         .expect(422);
       await http()
-        .post(`/api/public/bookings/${b.reference}/payments/stripe-intent`)
+        .post(`/api/public/bookings/${b.reference}/payments/culqi-charge`)
         .set('X-Booking-Token', b.token)
-        .send({ kind: 'FULL', amountCents: 1 })
+        .send({
+          kind: 'FULL',
+          token: 'tok_ok',
+          email: 'a@example.com',
+          amountCents: 1,
+        })
         .expect(422);
       expect(await prisma.payment.count({ where: { bookingId: b.id } })).toBe(
         0,
@@ -655,37 +655,6 @@ describe('Endurecimiento de pagos, reembolsos y comprobantes (e2e)', () => {
 
   // ----------------------------------------------------------------- Secretos
   describe('secrets', () => {
-    it('never stores the Stripe client secret in a webhook event or an idempotency record', async () => {
-      const b = await makeBooking(app, fx);
-      const key = `k-${rand()}${rand()}`;
-      const res = await http()
-        .post(`/api/public/bookings/${b.reference}/payments/stripe-intent`)
-        .set('X-Booking-Token', b.token)
-        .set('Idempotency-Key', key)
-        .send({ kind: 'FULL' })
-        .expect(201);
-      const secret = (res.body as Body).clientSecret as string;
-      expect(secret).toContain('_secret_');
-      const rec = await prisma.idempotencyRecord.findFirstOrThrow({
-        where: { key },
-      });
-      expect(JSON.stringify(rec)).not.toContain(secret);
-
-      const p = await payment((res.body as Body).paymentId);
-      const event = succeededEvent(p);
-      (event as { payment: Body }).payment.clientSecret = secret;
-      await postWebhook(app, 'stripe', event).expect(200);
-      const stored = await prisma.webhookEvent.findFirstOrThrow({
-        where: { eventId: event.eventId },
-      });
-      expect(JSON.stringify(stored)).not.toContain(secret);
-      expect(JSON.stringify(stored)).not.toContain('clientSecret');
-      const audits = await prisma.auditLog.findMany({
-        where: { entity: 'Payment', entityId: p.id },
-      });
-      expect(JSON.stringify(audits)).not.toContain(secret);
-    });
-
     it('does not keep the Culqi token anywhere', async () => {
       const b = await makeBooking(app, fx, { currency: 'PEN' });
       const token = 'tok_ok';

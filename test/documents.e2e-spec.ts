@@ -327,19 +327,19 @@ describe('Comprobantes (e2e)', () => {
       const p = await prisma.payment.create({
         data: {
           bookingId: b.id,
-          provider: 'STRIPE',
+          provider: 'CULQI',
           method: 'CARD',
           kind: 'FULL',
           status: 'PENDING',
           currency: 'USD',
           amountCents: b.total,
-          providerRef: `pi_a_${rand()}${rand()}`,
+          providerRef: `chr_a_${rand()}${rand()}`,
         },
       });
-      await postWebhook(app, 'stripe', {
+      await postWebhook(app, 'culqi', {
         kind: 'payment',
         eventId: evt(),
-        type: 'payment_intent.succeeded',
+        type: 'charge.creation.succeeded',
         payment: {
           providerRef: p.providerRef!,
           status: 'SUCCEEDED',
@@ -398,7 +398,7 @@ describe('Comprobantes (e2e)', () => {
         kind: 'DEPOSIT',
       });
       const bal = await recordPaid(app, b, {
-        provider: 'STRIPE',
+        provider: 'CULQI',
         amountCents: 14000,
         kind: 'BALANCE',
       });
@@ -767,8 +767,8 @@ describe('Comprobantes (e2e)', () => {
 
     it('issues the credit note automatically when a payment with a document is refunded', async () => {
       const { b, p, doc } = await accepted();
-      const stripe = app.get(GatewayRegistry).get('STRIPE') as FakeGateway;
-      expect(stripe).toBeTruthy();
+      const culqi = app.get(GatewayRegistry).get('CULQI') as FakeGateway;
+      expect(culqi).toBeTruthy();
       const res = await http()
         .post(`/api/payments/${p.id}/refunds`)
         .set(admin.auth)

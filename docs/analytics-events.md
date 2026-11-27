@@ -19,7 +19,7 @@ Contrato entre `desertica-web` (navegador), `desertica-api` (servidor) y Google 
 | `select_item` | — | Clic en un tour del listado | `item_list_name`, `items[]` |
 | `view_item` | `ViewContent` | Detalle de un tour | `currency`, `value`, `items[]` |
 | `begin_checkout` | `InitiateCheckout` | El cliente confirma fecha y personas y crea la reserva | `currency`, `value`, `items[]`, `event_id` |
-| `add_payment_info` | `AddPaymentInfo` | El cliente elige método de pago | `currency`, `value`, `payment_type` (`stripe` o `culqi`), `event_id` |
+| `add_payment_info` | `AddPaymentInfo` | El cliente elige método de pago | `currency`, `value`, `payment_type` (`culqi`), `event_id` |
 | `purchase` | `Purchase` | El pago queda confirmado | `transaction_id` (`<referencia>-<n>`), `currency`, `value`, `items[]`, `event_id` (igual a `transaction_id`) |
 | `generate_lead` | `Lead` | Envío del formulario de contacto | `form` (`contact`) |
 | `click_whatsapp` | `Contact` | Clic en un enlace de WhatsApp | `placement` |
