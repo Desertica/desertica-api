@@ -1,4 +1,3 @@
-import { createHmac } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { CulqiGateway } from './culqi.gateway';
@@ -7,8 +6,6 @@ import {
   InvalidWebhookSignatureError,
 } from './payment-gateway';
 
-const SECRET = 'culqi-webhook-secret';
-
 interface ReqBody {
   source_id?: string;
   authentication_3DS?: unknown;
@@ -16,12 +13,16 @@ interface ReqBody {
   currency_code?: string;
   metadata?: object;
   charge_id?: string;
+  antifraud_details?: object;
 }
 
 describe('CulqiGateway (local server)', () => {
   let server: Server;
   let apiUrl: string;
   let charges: Record<string, object>;
+  /** Eventos que "Culqi" conoce (`GET /v2/events/{id}`). */
+  let events: Record<string, object>;
+  let refundStatus: string | undefined;
   const seen: {
     method?: string;
     url?: string;
@@ -31,6 +32,8 @@ describe('CulqiGateway (local server)', () => {
 
   beforeEach(() => {
     charges = {};
+    events = {};
+    refundStatus = undefined;
     seen.length = 0;
   });
 
@@ -61,10 +64,16 @@ describe('CulqiGateway (local server)', () => {
             );
           }
           if (body.source_id === 'tkn_3ds' && !body.authentication_3DS) {
+            // Respuesta documentada: HTTP 200 (no 201) y sin objeto `charge`.
+            res.statusCode = 200;
             return res.end(
-              JSON.stringify({ object: 'charge', action_code: 'REVIEW' }),
+              JSON.stringify({
+                user_message: 'El usuario necesita autenticarse',
+                action_code: 'REVIEW',
+              }),
             );
           }
+          res.statusCode = 201;
           const charge = {
             object: 'charge',
             id: 'chr_test_1',
@@ -99,8 +108,23 @@ describe('CulqiGateway (local server)', () => {
               id: 'ref_1',
               charge_id: body.charge_id,
               amount: body.amount,
+              status: refundStatus,
             }),
           );
+        }
+        if (req.method === 'GET' && req.url?.startsWith('/v2/events/')) {
+          const found = events[req.url.split('/').pop()!];
+          if (!found) {
+            res.statusCode = 404;
+            return res.end(
+              JSON.stringify({
+                object: 'error',
+                type: 'resource_error',
+                merchant_message: 'No existe el evento',
+              }),
+            );
+          }
+          return res.end(JSON.stringify(found));
         }
         res.statusCode = 404;
         res.end('{}');
@@ -116,7 +140,6 @@ describe('CulqiGateway (local server)', () => {
       secretKey: 'sk_test_x',
       publicKey: 'pk_test_x',
       apiUrl,
-      webhookSecret: SECRET,
       ...over,
     });
 
@@ -143,7 +166,7 @@ describe('CulqiGateway (local server)', () => {
     const call = seen[0];
     expect(call.headers.authorization).toBe('Bearer sk_test_x');
     expect(call.body).toMatchObject({
-      amount: '36000',
+      amount: 36000,
       currency_code: 'PEN',
       email: 'a@example.com',
       source_id: 'tkn_ok',
@@ -182,6 +205,13 @@ describe('CulqiGateway (local server)', () => {
     expect(seen[1].body.authentication_3DS).toEqual({ eci: '05' });
   });
 
+  it('sends the device id as antifraud_details.device_finger_print_id', async () => {
+    await gateway().createPayment(input({ deviceId: 'dev-1' }));
+    expect(seen[0].body.antifraud_details).toEqual({
+      device_finger_print_id: 'dev-1',
+    });
+  });
+
   it('refunds against the charge', async () => {
     const refund = await gateway().refund({
       refundId: 'r-1',
@@ -196,6 +226,23 @@ describe('CulqiGateway (local server)', () => {
       paymentProviderRef: 'chr_test_1',
       amountCents: 500,
     });
+    expect(seen[0].body).toMatchObject({ reason: 'solicitud_comprador' });
+  });
+
+  it.each([
+    ['Pendiente', 'PENDING'],
+    ['Rechazado', 'FAILED'],
+    ['completa', 'SUCCEEDED'],
+  ])('maps refund status %s to %s', async (status, expected) => {
+    refundStatus = status;
+    const refund = await gateway().refund({
+      refundId: 'r-1',
+      paymentProviderRef: 'chr_test_1',
+      amountCents: 500,
+      currency: 'PEN',
+      reason: 'x',
+    });
+    expect(refund.status).toBe(expected);
   });
 
   it('is unavailable without a key', async () => {
@@ -205,99 +252,100 @@ describe('CulqiGateway (local server)', () => {
   });
 
   describe('webhook', () => {
-    const sign = (raw: string, secret = SECRET) =>
-      createHmac('sha256', secret).update(raw).digest('hex');
+    const post = (body: object) =>
+      gateway().parseWebhook(Buffer.from(JSON.stringify(body)));
 
-    it('verifies the signature and re-reads the charge instead of trusting the body', async () => {
+    it('reads the event back from Culqi and re-reads the charge instead of trusting the body', async () => {
       await gateway().createPayment(input());
-      const raw = JSON.stringify({
+      events.evt_test_c1 = {
         object: 'event',
-        id: 'evt_c1',
+        id: 'evt_test_c1',
         type: 'charge.creation.succeeded',
-        data: JSON.stringify({
-          object: 'charge',
-          id: 'chr_test_1',
-          amount: 1,
-          currency: 'PEN',
-        }),
+        data: JSON.stringify({ object: 'charge', id: 'chr_test_1' }),
+      };
+      const parsed = await post({
+        object: 'event',
+        id: 'evt_test_c1',
+        // Lo que viene en el cuerpo no cuenta: ni el tipo ni el monto.
+        type: 'charge.creation.failed',
+        data: JSON.stringify({ object: 'charge', id: 'chr_x', amount: 1 }),
       });
-      const parsed = await gateway().parseWebhook(Buffer.from(raw), {
-        'x-culqi-signature': sign(raw),
-      });
-      // El monto del cuerpo (1) se ignora: manda el del cargo consultado (36000).
       expect(parsed).toMatchObject({
         kind: 'payment',
-        eventId: 'evt_c1',
+        eventId: 'evt_test_c1',
+        type: 'charge.creation.succeeded',
         payment: {
           providerRef: 'chr_test_1',
           amountCents: 36000,
           status: 'SUCCEEDED',
         },
       });
+      expect(seen.map((r) => `${r.method} ${r.url}`)).toContain(
+        'GET /v2/events/evt_test_c1',
+      );
+      expect(seen.at(-1)?.headers.authorization).toBe('Bearer sk_test_x');
     });
 
-    it('rejects a missing, wrong or tampered signature', async () => {
-      const raw = JSON.stringify({
-        object: 'event',
-        id: 'evt_c2',
-        type: 'x',
-        data: {},
-      });
+    it('rejects a body without a Culqi event id or with an id Culqi does not know', async () => {
+      for (const body of [
+        { type: 'charge.creation.succeeded', data: {} },
+        { id: '../charges/chr_test_1', data: {} },
+      ]) {
+        await expect(post(body)).rejects.toBeInstanceOf(
+          InvalidWebhookSignatureError,
+        );
+      }
       await expect(
-        gateway().parseWebhook(Buffer.from(raw), {}),
+        gateway().parseWebhook(Buffer.from('not json')),
       ).rejects.toBeInstanceOf(InvalidWebhookSignatureError);
       await expect(
-        gateway().parseWebhook(Buffer.from(raw), {
-          'x-culqi-signature': sign(raw, 'other'),
-        }),
-      ).rejects.toBeInstanceOf(InvalidWebhookSignatureError);
-      await expect(
-        gateway().parseWebhook(Buffer.from(raw + ' '), {
-          'x-culqi-signature': sign(raw),
+        post({
+          id: 'evt_test_forged',
+          data: { object: 'refund', id: 'ref_9' },
         }),
       ).rejects.toBeInstanceOf(InvalidWebhookSignatureError);
     });
 
-    it('is unavailable without a webhook secret', async () => {
+    it('is unavailable without a secret key', async () => {
       await expect(
-        gateway({ webhookSecret: '' }).parseWebhook(Buffer.from('{}'), {}),
+        gateway({ secretKey: '' }).parseWebhook(
+          Buffer.from(JSON.stringify({ id: 'evt_test_x' })),
+        ),
       ).rejects.toBeInstanceOf(GatewayNotConfiguredError);
     });
 
-    it('normalizes refund events and ignores the rest', async () => {
-      const refundRaw = JSON.stringify({
+    it('normalizes refund events from the event Culqi returns and ignores the rest', async () => {
+      events.evt_test_r = {
         object: 'event',
-        id: 'evt_r',
+        id: 'evt_test_r',
         type: 'refund.creation.succeeded',
         data: {
           object: 'refund',
           id: 'ref_9',
           charge_id: 'chr_x',
           amount: 700,
+          status: 'Completa',
         },
-      });
-      expect(
-        await gateway().parseWebhook(Buffer.from(refundRaw), {
-          'x-culqi-signature': sign(refundRaw),
-        }),
-      ).toMatchObject({
+      };
+      expect(await post({ id: 'evt_test_r', data: {} })).toMatchObject({
         kind: 'refund',
         refund: {
           providerRef: 'ref_9',
           paymentProviderRef: 'chr_x',
           amountCents: 700,
+          status: 'SUCCEEDED',
         },
       });
-      const otherRaw = JSON.stringify({
+      events.evt_test_o = {
         object: 'event',
+        id: 'evt_test_o',
         type: 'order.status.changed',
-        data: {},
+        data: '{"object":"order","id":"ord_test_1"}',
+      };
+      expect(await post({ id: 'evt_test_o' })).toMatchObject({
+        kind: 'ignored',
+        eventId: 'evt_test_o',
       });
-      expect(
-        await gateway().parseWebhook(Buffer.from(otherRaw), {
-          'x-culqi-signature': sign(otherRaw),
-        }),
-      ).toMatchObject({ kind: 'ignored' });
     });
   });
 });

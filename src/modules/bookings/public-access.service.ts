@@ -51,11 +51,11 @@ export class PublicAccessService {
     });
     if (!booking || normalizeEmail(booking.customer.email) !== email) return;
 
-    const token = await this.access.issue(
-      this.prisma,
-      booking.id,
-      booking.departure.startsAt,
-    );
+    // Solo vale el último enlace enviado.
+    const token = await this.prisma.$transaction(async (tx) => {
+      await this.access.revokeAll(tx, booking.id);
+      return this.access.issue(tx, booking.id, booking.departure.startsAt);
+    });
     const base = this.config.get('PUBLIC_WEB_URL', { infer: true });
     await this.notifications.sendEmail(
       {

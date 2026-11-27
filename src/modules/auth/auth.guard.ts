@@ -13,6 +13,10 @@ import { EnvVars } from '../../config/env.validation';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthUser } from './auth.types';
 import { IS_PUBLIC_KEY, PERMISSIONS_KEY } from './decorators';
+import { RECENT_LOGIN_PERMISSIONS, type Permission } from './permissions';
+
+/** `details.reason` del 403 que pide volver a entrar con Google antes de una acción delicada. */
+export const REAUTH_REQUIRED = 'reauth_required';
 
 /**
  * Guard global. Todo es del staff salvo lo marcado `@Public()`. Valida el JWT
@@ -40,11 +44,16 @@ export class AuthGuard implements CanActivate {
     if (!token) throw new UnauthorizedException('Missing bearer token');
 
     let userId: string;
+    let authTime: number | undefined;
     try {
-      const payload = await this.jwt.verifyAsync<{ sub: string }>(token, {
+      const payload = await this.jwt.verifyAsync<{
+        sub: string;
+        auth_time?: number;
+      }>(token, {
         secret: this.config.get('JWT_ACCESS_SECRET', { infer: true }),
       });
       userId = payload.sub;
+      authTime = payload.auth_time;
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
@@ -75,6 +84,18 @@ export class AuthGuard implements CanActivate {
         message: 'Missing permission',
         details: { required: missing },
       });
+    }
+    if (required.some((p) => RECENT_LOGIN_PERMISSIONS.has(p as Permission))) {
+      const maxAgeMinutes = this.config.get('REAUTH_MAX_AGE_MINUTES', {
+        infer: true,
+      });
+      const ageSeconds = Date.now() / 1000 - (authTime ?? 0);
+      if (ageSeconds > maxAgeMinutes * 60) {
+        throw new ForbiddenException({
+          message: 'Recent login required',
+          details: { reason: REAUTH_REQUIRED, maxAgeMinutes },
+        });
+      }
     }
     return true;
   }

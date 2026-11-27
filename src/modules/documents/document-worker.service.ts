@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import {
   Inject,
   Injectable,
@@ -446,7 +447,7 @@ export class DocumentWorker
     const retryable = error instanceof BillingError ? error.retryable : true;
     const attempts = job.attempts + 1;
     this.logger.warn(
-      `Document job ${job.id} (${job.kind}) failed, attempt ${attempts}: ${message}`,
+      `Document job ${job.id} (${job.kind}) failed, attempt ${attempts}: ${describeError(error)}`,
     );
     const doc = await this.prisma.document.findUnique({
       where: { id: job.documentId },

@@ -16,6 +16,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
 import { PaginationQuery } from '../../../common/pagination/pagination';
@@ -208,7 +209,17 @@ export class ManualPaymentDto {
   @IsEnum(PaymentKind) kind!: PaymentKind;
   @IsInt() @Min(1) amountCents!: number;
   @IsEnum(Currency) currency!: Currency;
-  @IsOptional() @IsString() @MaxLength(120) reference?: string;
+  /** Obligatorio para transferencia y Yape: es lo que Finanzas cruza con el banco. */
+  @ValidateIf(
+    (o: ManualPaymentDto) =>
+      o.method === 'TRANSFER' ||
+      o.method === 'YAPE' ||
+      o.reference !== undefined,
+  )
+  @IsString()
+  @Matches(/\S/)
+  @MaxLength(120)
+  reference?: string;
   @IsOptional() @IsISO8601() paidAt?: string;
 }
 

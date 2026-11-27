@@ -200,6 +200,10 @@ export class DepartureCancellationService {
             cancelReason: dto.reason,
           },
         });
+        // Los enlaces de "mi reserva" ya emitidos dejan de servir; el cliente puede pedir uno nuevo.
+        await tx.bookingAccessToken.deleteMany({
+          where: { bookingId: booking.id },
+        });
         if (booking.holdId) {
           await tx.hold.update({
             where: { id: booking.holdId },
@@ -215,7 +219,7 @@ export class DepartureCancellationService {
             before: { status: booking.status, paidCents: booking.paidCents },
             after: {
               status: 'CANCELLED',
-              reason: dto.reason,
+              hasReason: Boolean(dto.reason),
               refundMode: 'DEPARTURE_CANCELLED',
               refundDueCents: refundCents,
             },

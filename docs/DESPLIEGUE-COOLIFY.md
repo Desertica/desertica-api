@@ -142,6 +142,9 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `NODE_ENV` | `production` | **También en staging**: ver el recuadro de abajo. |
 | `DATABASE_URL` | obligatoria | `postgresql://…@<host interno>:5432/desertica_api` |
 | `JWT_ACCESS_SECRET` | obligatoria, secreto | Cadena larga aleatoria, distinta por entorno. |
+| `DATA_ENCRYPTION_KEY` | obligatoria, secreto | `openssl rand -base64 32`, distinta por entorno. Cifra las notas médicas: guárdala también fuera de Coolify; si se pierde, esas notas no se pueden leer. No se cambia sin recifrar. |
+| `LINK_SIGNING_SECRET` | recomendada, secreto | Cadena aleatoria de 32+ caracteres para los enlaces de los PDF. Sin ella se deriva de `JWT_ACCESS_SECRET`. |
+| `SESSION_MAX_HOURS`, `REAUTH_MAX_AGE_MINUTES` | opcionales | Por defecto 12 h de sesión y 10 min para las acciones delicadas. |
 | `GOOGLE_CLIENT_ID` | obligatoria | Login del backoffice. |
 | `ALLOWED_EMAIL_DOMAIN` | por defecto `desertica.pe` | Dominio de Google Workspace de la empresa. |
 | `CORS_ORIGINS` | obligatoria | Origen del backoffice (`https://admin.<dominio>`). Lista separada por comas. |
@@ -153,9 +156,10 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `MAIL_DRIVER` | `smtp` | Obligatorio en producción. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | obligatorias | Relay de Google Workspace; `MAIL_REPLY_TO` y `STAFF_NOTIFY_EMAIL` opcionales. |
 | `CMS_URL`, `CMS_API_TOKEN` | URL interna del CMS | Token de solo lectura. |
+| `CMS_WEBHOOK_SECRET` | secreto, 32+ caracteres (`openssl rand -hex 32`) | El mismo valor va en la cabecera `X-Webhook-Secret` del webhook de Strapi (§8). Vacío = webhook apagado (responde 503) y los tours solo se sincronizan con el botón. |
 | `PAYMENT_GATEWAY_MODE` | `live` | Obligatorio en producción. En staging se usan **claves de prueba**, no un modo simulado. |
-| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | secretos | Claves `test` en staging. |
-| `CULQI_SECRET_KEY`, `CULQI_PUBLIC_KEY`, `CULQI_WEBHOOK_SECRET` | secretos | Claves de integración en staging. |
+| `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | **vacías** | Stripe está apagado: con `STRIPE_SECRET_KEY` vacía el API no lo ofrece y la web no lo muestra ni carga su script. Para volver a usarlo basta con llenarlas (ver §8). |
+| `CULQI_SECRET_KEY`, `CULQI_PUBLIC_KEY` | secretos | Claves de integración (`sk_test_…`, `pk_test_…`) en staging; de producción (`sk_live_…`, `pk_live_…`) en producción. Ver §8.1. |
 | `BILLING_MODE` | `live` | Obligatorio en producción. |
 | `BILLING_URL`, `BILLING_SERVICE_TOKEN` | URL interna y secreto | El mismo token que `BILLING_SERVICE_TOKEN` de billing. |
 | `DOCUMENT_STORAGE` | `s3` | Los comprobantes van al bucket R2 privado `desertica-comprobantes` (jurisdicción UE). Con `local` se pierden en cada despliegue: el API no tiene volumen. |
@@ -169,7 +173,7 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 
 **Migración única al bucket.** Si ya hay comprobantes en el directorio local (por ejemplo en desarrollo o en un servidor con volumen), cópialos una vez con las variables `DOCUMENT_S3_*` cargadas: primero `npm run documents:migrate-to-s3 -- --dry-run` (solo informa) y luego sin `--dry-run`. Se puede repetir sin riesgo: salta lo que ya está igual y **nunca sobrescribe**; si un archivo ya está en el bucket con otro contenido lo informa como conflicto, no lo toca y termina con error.
 
-> **Por qué staging también es `NODE_ENV=production`.** En producción el API rechaza `PAYMENT_GATEWAY_MODE=fake`, `BILLING_MODE=fake`, `AUTH_ALLOW_FAKE_GOOGLE=true` y exige Turnstile y Google reales. Eso es deliberado (protege producción de una mala configuración), pero implica que **staging necesita de verdad**: un client id de Google, claves de prueba de Stripe y de Culqi, y un billing levantado contra SUNAT beta.
+> **Por qué staging también es `NODE_ENV=production`.** En producción el API rechaza `PAYMENT_GATEWAY_MODE=fake`, `BILLING_MODE=fake`, `AUTH_ALLOW_FAKE_GOOGLE=true` y exige Turnstile y Google reales. Eso es deliberado (protege producción de una mala configuración), pero implica que **staging necesita de verdad**: un client id de Google, claves de prueba de Culqi (Stripe está apagado), y un billing levantado contra SUNAT beta.
 
 ### 5.2 `desertica-billing`
 
@@ -186,6 +190,17 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `BILLING_SUNAT_CA_FILE` | Solo si la cadena TLS de SUNAT no valida con la imagen. No hay interruptor para apagar la verificación. |
 
 El certificado digital y la clave SOL **reales** solo existen en el servidor de producción. Nunca se cargan en sesiones cloud ni en Git.
+
+#### Billing en staging (configurado el 2026-11-26)
+
+- App `desertica-billing:staging` (uuid `u0ttcjimnptq2v1g6my8bonu`), mismo proyecto y entorno que las demás, GitHub App `desertica-coolify`, rama `staging`, build pack Dockerfile, puerto 8080, healthcheck `GET /health`.
+- **Sin dominio público** (Coolify pone uno `sslip.io` al crearla: se borró). Alias de red `desertica-billing`, así que el API la alcanza en `http://desertica-billing:8080` por la red `coolify`.
+- Volumen persistente en `/var/lib/billing` (SQLite y archivos).
+- `BILLING_ENV=BETA`, `BILLING_GATEWAY=greenter` (SUNAT beta de verdad), `BILLING_STORAGE_DIR=/var/lib/billing`, `BILLING_SOL_USER`/`BILLING_SOL_PASSWORD` con las credenciales públicas de beta de la guía de Greenter. `BILLING_ISSUER_*` sin definir: en BETA quedan los de prueba (RUC `20000000001`), el único que acepta SUNAT beta con esas credenciales.
+- Certificado: autofirmado de prueba (PEM con clave y certificado, sin contraseña, un año de vigencia), generado con `openssl req -x509` y montado como **archivo** de Coolify en `/run/secrets/billing-beta-cert.pem` (`BILLING_CERT_PATH`). SUNAT beta no verifica la cadena. Para renovarlo, generar otro igual y reemplazar el contenido del archivo en Coolify.
+- `BILLING_SERVICE_TOKEN`: aleatorio de 32 bytes (hex), el mismo en billing y en el API. Solo vive en Coolify.
+- En el API de staging: `BILLING_URL=http://desertica-billing:8080`, `BILLING_SERVICE_TOKEN` y `DOCUMENT_WORKER_SECONDS=15` (el valor por defecto; antes estaba en `0`, worker apagado).
+- Verificado: billing arranca sano (el arranque valida configuración y certificado y el healthcheck de Coolify pasa) y el API arranca sin errores con el worker encendido. **No verificado**: una emisión de punta a punta. Necesita en el backoffice una Empresa activa con sus series (`B001`, `F001`) y una reserva con pago confirmado; el worker solo llama a billing cuando hay trabajos.
 
 ### 5.3 `desertica-web`
 
@@ -232,13 +247,58 @@ El certificado digital y la clave SOL **reales** solo existen en el servidor de 
 
 | Qué | Dónde | Detalle |
 |---|---|---|
-| Stripe | Panel de Stripe (modo prueba), URL `https://api-stg.<dominio>/api/webhooks/stripe` | Eventos: `payment_intent.succeeded`, `.payment_failed`, `.canceled`, `.requires_action`; `refund.created`, `.updated`, `.failed`; `charge.dispute.created`, `.updated`, `.closed`, `.funds_withdrawn`, `.funds_reinstated`. El secreto va en `STRIPE_WEBHOOK_SECRET`. |
-| Culqi | Panel de Culqi, URL `https://api-stg.<dominio>/api/webhooks/culqi` | La forma de firmar el webhook **no está confirmada** con la documentación de Culqi (hoy se asume HMAC en `x-culqi-signature`). Verificar con un evento real antes de confiar en él. |
+| Stripe (apagado por ahora) | Panel de Stripe (modo prueba), URL `https://api-stg.<dominio>/api/webhooks/stripe` | Eventos: `payment_intent.succeeded`, `.payment_failed`, `.canceled`, `.requires_action`; `refund.created`, `.updated`, `.failed`; `charge.dispute.created`, `.updated`, `.closed`, `.funds_withdrawn`, `.funds_reinstated`. El secreto va en `STRIPE_WEBHOOK_SECRET`. |
+| Culqi | CulqiPanel → **Eventos** → **Webhooks** → **+Añadir**, URL `https://api-stg.desertica.pe/api/webhooks/culqi` | Ver §8.1. Culqi no firma sus webhooks: el API consulta cada evento a Culqi con la clave secreta antes de creerlo, así que no hay secreto que copiar. |
+| CMS (Strapi) | Admin del CMS de staging > Settings > Webhooks, URL `https://api-stg.<dominio>/api/webhooks/cms` (o la URL interna del API si el CMS la alcanza) | Eventos `Entry: Publish` y `Unpublish`; cabecera `X-Webhook-Secret` = `CMS_WEBHOOK_SECRET`. Al publicar o despublicar un tour el API lo sincroniza solo (crea inactivo, refresca título, desactiva). Pasos en `docs/WEBHOOKS.md` del CMS. `Trigger` debe responder 200. Si Cloudflare tiene reglas anti-bots delante del API, dejar pasar esa ruta. |
 | Google (login) | Consola de Google Cloud | Cliente OAuth tipo "Aplicación web"; origen JS autorizado = URL del backoffice. |
 | Apple Pay | Panel de Stripe | Registrar el dominio del sitio y publicar el archivo de verificación que Stripe entrega, en la raíz del sitio. |
 | Correo | Admin de Google Workspace | Autorizar la IP del servidor en el relay SMTP y configurar SPF, DKIM y DMARC del dominio. |
 | Turnstile | Panel de Cloudflare | Claves de sitio y secreta por entorno. |
 | GTM, GA4, Meta | Sus paneles | `GTM_ID` en la web; el Pixel de Meta se configura dentro de GTM. |
+
+### 8.1 Culqi paso a paso (única pasarela por ahora)
+
+Contrastado con docs.culqi.com y apidocs.culqi.com en noviembre de 2026.
+
+**1. Abrir la cuenta.** Afiliación en `https://afiliate.culqi.com`. Culqi no publica la lista de documentos; tener a mano RUC de DESERTICA S.A.C., ficha RUC, DNI y vigencia de poder del representante legal y la cuenta bancaria de la empresa **en soles y en dólares** (los abonos llegan en la moneda cobrada). Pedir expresamente:
+- Cobro con **tarjeta en soles (PEN) y en dólares (USD)**.
+- Que la cuenta use **3D Secure (Culqi3DS)**: el sitio ya está preparado.
+- Que **no** hace falta Yape, PagoEfectivo, billeteras ni Cuotéalo por ahora (el sitio solo ofrece tarjeta).
+
+**2. Claves de prueba (integración).** En el panel de integración (`https://integ-panel.culqi.com`) → **Desarrollo** → **API Keys**. Hay dos:
+
+| Clave de Culqi | Empieza por | Dónde va en Coolify |
+|---|---|---|
+| Llave pública | `pk_test_` | `CULQI_PUBLIC_KEY` en **desertica-api** y también `CULQI_PUBLIC_KEY` en **desertica-web** (el mismo valor). |
+| Llave secreta | `sk_test_` | `CULQI_SECRET_KEY` solo en **desertica-api**. Nunca en la web. |
+
+Las de producción (`pk_live_`, `sk_live_`) salen de la misma sección del panel de producción y van en las mismas variables de las apps de producción. La web rechaza una clave que no empiece por `pk_`, para que una secreta pegada por error no llegue al navegador. `CULQI_API_URL` se deja con su valor por defecto. Las llaves RSA (cifrado opcional del cuerpo) **no** se usan. Tras cambiar variables, redesplegar las dos apps.
+
+**3. Webhook.** En el panel de integración → **Eventos** → **Webhooks** → **+Añadir**, URL `https://api-stg.desertica.pe/api/webhooks/culqi`, un webhook por cada evento:
+- `charge.creation.succeeded` (cargo cobrado)
+- `charge.creation.failed` (cargo rechazado)
+- `refund.creation.succeeded` (devolución hecha)
+- `refund.creation.failed` (devolución rechazada)
+
+No hay secreto que copiar: Culqi no documenta firma de webhooks, así que el API toma solo el id del evento y lo vuelve a pedir a Culqi con la clave secreta; un evento inventado responde 400. En producción, la misma lista con `https://api.desertica.pe/api/webhooks/culqi`.
+
+**4. Probar en staging** con `BOOKING_ENGINE_ENABLED=true`. Tarjetas oficiales de Culqi (solo funcionan con claves `test`):
+
+| Caso | Tarjeta | Venc. | CVV | Resultado esperado |
+|---|---|---|---|---|
+| Aceptada (Visa) | 4111 1111 1111 1111 | 09/30 | 123 | Reserva pagada |
+| Aceptada (Mastercard) | 5111 1111 1111 1118 | 12/30 | 039 | Reserva pagada |
+| Aceptada (Amex) | 3712 1212 1212 122 | 12/30 | 2841 | Reserva pagada |
+| Rechazada: fondos insuficientes | 4000 0400 0000 0008 | 03/30 | 295 | Mensaje de Culqi al cliente, sin cobro |
+| Rechazada: tarjeta robada | 4000 0200 0000 0000 | 10/30 | 354 | Idem |
+| Rechazada: CVV incorrecto | 5400 0200 0000 0003 | 07/30 | 203 | Idem |
+| 3DS con desafío (pide código) | 4456 5300 0000 1096 | 07/30 | 111 | Ventana del banco y luego pagada |
+| 3DS sin desafío | 4456 5300 0000 1005 | 07/30 | 111 | Pagada sin ventana visible |
+| 3DS fallido | 4456 5300 0000 1013 | 07/30 | 111 | "No se pudo autenticar", sin cobro |
+
+Para los casos 3DS Culqi pide usar el correo `review@culqi.com` en la ventana de pago. Probar cada caso **en soles y en dólares** (una reserva de cada moneda), además de un **reembolso** desde el backoffice y un pago por **enlace de pago**. Comprobar en CulqiPanel que llegaron los eventos (Eventos → historial) y que la reserva cambió de estado.
+
+**Qué queda por confirmar con claves reales** (la documentación pública no lo cierra): (a) la documentación se contradice sobre si el cargo exitoso responde 200 o 201; el API no depende de eso (mira `action_code: "REVIEW"`), pero conviene verlo; (b) la forma exacta del cuerpo del webhook en la práctica (el API solo usa su `id`); (c) los eventos de contracargo: Culqi no publica eventos de disputa, así que una disputa solo se detecta si el cargo trae `dispute: true` al releerlo; (d) el Checkout v4 que usa la web está marcado por Culqi como "dejará de estar disponible pronto" (sucesor: Checkout Custom).
 
 ## 9. Redis: ¿hace falta?
 
@@ -252,7 +312,7 @@ No para funcionar. Sin `REDIS_URL` el límite de peticiones y la caché del CMS 
 4. **Construcción de imágenes**: ninguna se ha construido todavía en un Docker real. Verificar sobre todo billing (nginx + php-fpm sin root, con sistema de archivos de solo lectura) y que los nombres de paquetes de Debian existan.
 5. **SUNAT beta**: probar una emisión real, la lectura del CDR y el caso "comprobante ya registrado". El código de error exacto de ese caso viene de una fuente de terceros y es configurable (`BILLING_ALREADY_REGISTERED_CODES`).
 6. **Culqi**: 3DS, firma del webhook, reembolsos y el tipo del monto, que no se contrastaron con su documentación.
-7. **Stripe con Apple Pay y Google Pay** en un teléfono real, con el dominio verificado.
+7. *(Solo si se reactiva Stripe.)* **Stripe con Apple Pay y Google Pay** en un teléfono real, con el dominio verificado.
 8. **Peso real de cada servicio** con `docker stats` durante una prueba de carga corta; actualizar §1.
 
 ## 11. Respaldos y recuperación
@@ -281,7 +341,7 @@ Un solo servidor es un punto único de falla. Los respaldos tienen que salir del
 
 1. Crear el entorno `production` en Coolify con dominios, bases y volúmenes propios.
 2. Cargar el certificado real y la clave SOL **solo** en billing de producción; `BILLING_ENV=PRODUCTION` y `BILLING_ISSUER_*` con los datos reales.
-3. Claves **de producción** de Stripe y Culqi, y registrar de nuevo los webhooks con las URLs de producción.
+3. Claves **de producción** de Culqi (y de Stripe solo si se reactiva), y registrar de nuevo los webhooks con las URLs de producción.
 4. Cargar la `Company` real y las series reales; revisar los textos legales con el abogado.
 5. Un **cobro real de monto mínimo**, su comprobante en SUNAT, un reembolso y la nota de crédito. Solo después se abre la venta.
 6. `ROBOTS_DISALLOW_ALL=false` y enviar el sitemap a Search Console.

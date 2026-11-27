@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import {
   BadGatewayException,
   ConflictException,
@@ -37,6 +38,7 @@ export interface CulqiInput {
   email: string;
   /** Pago `REQUIRES_ACTION` que se continúa con la autenticación 3DS. */
   paymentId?: string;
+  deviceId?: string;
   authentication3DS?: Record<string, unknown>;
 }
 
@@ -347,6 +349,7 @@ export class PaymentsService {
           description,
           token: culqi.token,
           email: culqi.email,
+          deviceId: culqi.deviceId,
           authentication3DS: culqi.authentication3DS,
         });
       } catch (error) {
@@ -435,7 +438,9 @@ export class PaymentsService {
       error instanceof GatewayNotConfiguredError
         ? 'gateway_not_configured'
         : 'gateway_error';
-    this.logger.error(`Payment ${paymentId} not started: ${String(error)}`);
+    this.logger.error(
+      `Payment ${paymentId} not started: ${describeError(error)}`,
+    );
     await this.prisma.payment
       .updateMany({
         where: { id: paymentId, status: 'PENDING', providerRef: null },

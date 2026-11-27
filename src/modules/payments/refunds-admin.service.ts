@@ -293,6 +293,21 @@ export class RefundsService {
     if (!refund) {
       // Hecho desde el panel de la pasarela: no hay fila nuestra.
       if (gw.status === 'PENDING') return;
+      // El monto viene del aviso y no se reconsulta: nunca se acepta más de lo que queda por devolver.
+      if (gw.amountCents > settled.amountCents - settled.refundedCents) {
+        fx.error = 'refund_exceeds_payment';
+        fx.alerts.push({
+          code: 'refund_external_exceeds_payment',
+          data: {
+            paymentId: payment.id,
+            refundableCents: settled.amountCents - settled.refundedCents,
+            received: gw.amountCents,
+            providerRef: gw.providerRef,
+          },
+          bookingId: payment.bookingId,
+        });
+        return;
+      }
       const created = await tx.refund.create({
         data: {
           paymentId: payment.id,

@@ -192,6 +192,88 @@ describe('Catálogo (e2e)', () => {
     await http().get('/api/tour-refs').set(operator.auth).expect(200);
   });
 
+  describe('webhook del CMS', () => {
+    const secret = process.env.CMS_WEBHOOK_SECRET as string;
+    const slugC = `tour-c-${run}`;
+    const hook = (body: Body, key: string | null = secret) => {
+      const req = http().post('/api/webhooks/cms');
+      return (key === null ? req : req.set('X-Webhook-Secret', key)).send(body);
+    };
+    const publish = (slug: string, event = 'entry.publish') => ({
+      event,
+      model: 'tour',
+      entry: { slug, locale: 'es' },
+    });
+
+    it('rejects a missing or wrong secret without touching anything', async () => {
+      const all = cmsTours;
+      cmsTours = [...all, { slug: slugC, title: 'Tour C' }];
+      await hook(publish(slugC), null).expect(401);
+      await hook(publish(slugC), `${secret}x`).expect(401);
+      await hook(publish(slugC), 'short').expect(401);
+      expect(
+        await prisma.tourRef.findUnique({ where: { slug: slugC } }),
+      ).toBeNull();
+      cmsTours = all;
+    });
+
+    it('syncs only the published tour, and repeating it changes nothing', async () => {
+      const all = cmsTours;
+      cmsTours = [...all, { slug: slugC, title: 'Tour C' }];
+      const before = await prisma.tourRef.findUniqueOrThrow({
+        where: { slug: slugA },
+      });
+      const first = await hook(publish(slugC)).expect(200);
+      expect(first.body).toEqual({ created: 1, updated: 0, deactivated: 0 });
+      const again = await hook(publish(slugC)).expect(200);
+      expect(again.body).toEqual({ created: 0, updated: 1, deactivated: 0 });
+      expect(await prisma.tourRef.count({ where: { slug: slugC } })).toBe(1);
+      expect(
+        await prisma.tourRef.findUniqueOrThrow({ where: { slug: slugC } }),
+      ).toMatchObject({ title: 'Tour C', active: false });
+      // Los demás tours no se tocan.
+      expect(
+        (await prisma.tourRef.findUniqueOrThrow({ where: { slug: slugA } }))
+          .cmsSyncedAt,
+      ).toEqual(before.cmsSyncedAt);
+      expect(
+        await prisma.auditLog.findFirst({
+          where: { action: 'tourRef.sync', entityId: slugC },
+        }),
+      ).toMatchObject({ actorUserId: null });
+
+      // Despublicado: se desactiva solo ese tour.
+      await prisma.tourRef.update({
+        where: { slug: slugC },
+        data: { active: true },
+      });
+      cmsTours = all;
+      const gone = await hook(publish(slugC, 'entry.unpublish')).expect(200);
+      expect(gone.body).toEqual({ created: 0, updated: 0, deactivated: 1 });
+      expect(
+        await prisma.tourRef.findUniqueOrThrow({ where: { slug: slugC } }),
+      ).toMatchObject({ active: false });
+      expect(
+        await prisma.tourRef.findUniqueOrThrow({ where: { slug: slugA } }),
+      ).toMatchObject({ active: before.active });
+    });
+
+    it('does nothing for an unknown tour or other models', async () => {
+      const unknown = `tour-x-${run}`;
+      const res = await hook(publish(unknown, 'entry.unpublish')).expect(200);
+      expect(res.body).toEqual({ created: 0, updated: 0, deactivated: 0 });
+      expect(
+        await prisma.tourRef.findUnique({ where: { slug: unknown } }),
+      ).toBeNull();
+      await hook({ event: 'trigger-test' })
+        .expect(200)
+        .expect({ ignored: true });
+      await hook({ ...publish(slugA), model: 'page' })
+        .expect(200)
+        .expect({ ignored: true });
+    });
+  });
+
   it('edits the operational data of a tour and validates it', async () => {
     const patch = (body: Body) =>
       http().patch(`/api/tour-refs/${tourA.id}`).set(admin.auth).send(body);

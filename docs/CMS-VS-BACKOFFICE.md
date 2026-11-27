@@ -12,7 +12,7 @@ Precios, salidas, cupos, bloqueos de fechas, reglas de reserva, políticas de ca
 
 ## Cómo se unen
 
-El tour nace en el CMS con su contenido y su slug. El backoffice lo sincroniza (`POST /tour-refs/sync`), le pone precio, salidas y reglas, y lo activa para vender. La web junta las dos fuentes en la ficha.
+El tour nace en el CMS con su contenido y su slug. El API lo sincroniza solo al publicarlo o despublicarlo, por el webhook del CMS (`POST /webhooks/cms`; el botón `POST /tour-refs/sync` queda de respaldo); el backoffice le pone precio, salidas y reglas, y lo activa para vender. La web junta las dos fuentes en la ficha.
 
 ## Lo que hay que mover (en este orden)
 

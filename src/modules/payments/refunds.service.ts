@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -231,9 +232,7 @@ export class RefundsExecutor {
           return outcome;
         });
     } catch (error) {
-      this.logger.error(
-        `Refund ${refundId} crashed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.logger.error(`Refund ${refundId} crashed: ${describeError(error)}`);
       return 'retry';
     }
   }

@@ -89,7 +89,9 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Emisión de pagos manuales**: la recoge el barrido del worker (hasta `DOCUMENT_WORKER_SECONDS`, 15 s); si se quiere inmediata, llamar a `DocumentsService.autoIssueForPayment` desde `BookingPaymentsService.recordManual`.
 - [x] **Pagos y disputas**: `listPayments`, `getPayment`, `listDisputes`, `getDispute`, `updateDispute`, `downloadDisputeEvidence` (ZIP con confirmación, políticas aceptadas con su texto, descargos, manifiesto, pagos, comprobantes y auditoría).
 - [ ] **Evidencia de disputas**: el descargo no guarda el texto firmado ni un PDF (ver «Texto del descargo»); el paquete solo trae quién firmó, cuándo y desde qué IP. Enviar la evidencia a Stripe/Culqi sigue siendo manual.
-- [ ] **Culqi sin verificar contra su documentación** (el entorno no llegó a docs.culqi.com): señal de 3DS pendiente (`action_code: REVIEW`) y campo `authentication_3DS` del reintento, esquema de firma del webhook (hoy HMAC-SHA256 del cuerpo en `x-culqi-signature`, con `CULQI_WEBHOOK_SECRET`), valores de `reason` en reembolsos, tipo del monto (texto o número), eventos de contracargo (hoy solo se abre una disputa si el cargo trae `dispute: true`). Revisar `modules/payments/providers/culqi.gateway.ts` con una clave de prueba y ajustar.
+- [x] **Culqi contrastado con su documentación** (nov. 2026): 3DS (`action_code: "REVIEW"`, reintento con `authentication_3DS` y el mismo `device_finger_print_id`), `reason` de reembolsos, estados `Completa`/`Pendiente`/`Rechazado`, monto entero en céntimos. Culqi no documenta firma de webhooks: el API consulta `GET /v2/events/{id}` (se retiró `CULQI_WEBHOOK_SECRET`).
+- [ ] **Culqi con claves reales**: probar la tabla de §8.1 de `DESPLIEGUE-COOLIFY.md`; confirmar el código HTTP del cargo exitoso (la documentación dice 200 y 201 en páginas distintas) y que no hay eventos de contracargo (hoy solo se abre una disputa si el cargo trae `dispute: true`).
+- [ ] **Culqi Checkout v4 en retiro**: Culqi anuncia que dejará de estar disponible; migrar la web al Checkout Custom (`js.culqi.com/checkout-js`).
 - [ ] **Pagos de prueba con claves reales**: crear un intent y un cargo de prueba, confirmar Apple Pay/Google Pay con el Express Checkout Element y registrar los webhooks (ver el informe de la Ola 2).
 - [ ] **Alertas al staff**: `StaffAlertsService` escribe en el log y envía la plantilla `payment_staff_alert` a `STAFF_NOTIFY_EMAIL`; falta la plantilla real y un canal que no sea correo (WhatsApp o Slack).
 - [ ] **Webhooks fuera de orden**: un reembolso, una disputa o un pago que llega antes de que exista o se acredite el cobro responde 409 y depende de que la pasarela reenvíe (Stripe reintenta durante días); si pasa de ese plazo hay que reconciliar a mano.
@@ -114,6 +116,16 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Logs**: las rutas con token (`/public/waivers|payment-links|holds/<token>`) y los parámetros `token`/`key`/`secret` salen redactados; los errores de Prisma se registran sin su mensaje y los de SMTP sin correos. `LogMailer` imprime enlaces con tokens: por eso producción exige `MAIL_DRIVER=smtp`. Falta decidir la retención de logs.
 - [x] **Imagen Docker**: `docker build` verificado; la imagen se poda a dependencias de producción (`prisma`, `dotenv` y `tsx` son dependencias para `migrate deploy`). El seed (`prisma/seed.ts`) importa de `src/`, que la imagen no trae: se corre desde el repo.
 
+## Eventos en vivo en el backoffice (propuesto, no hecho)
+
+Hoy las listas de reservas, pagos, disputas, reclamos y mensajes solo cambian al pulsar "Recargar". El webhook del CMS ya sincroniza los tours solo (`POST /webhooks/cms`). Diseño para lo demás, en su propio PR (API + backoffice), cuando cierre el PR de seguridad del backoffice:
+
+- **API**: `GET /api/events` (`text/event-stream`), autenticado con el mismo JWT del personal. Eventos sin datos personales, solo `{ type, id }`: `booking.created|updated` (permiso `bookings:read`), `payment.updated` y `dispute.updated` (`payments:read`), `complaint.created` (permiso de reclamos). Cada conexión recibe solo los tipos que sus permisos permiten; el navegador vuelve a pedir la fila con los endpoints de siempre, que ya aplican permisos. Se emite después del commit en reservas, `PaymentEventsService` y reclamos.
+- **Varias instancias**: Redis pub/sub (ya hay `REDIS_URL`); sin Redis, solo una instancia (como el resto de almacenes en memoria).
+- **Navegador**: `EventSource` no manda `Authorization`, y el token en la URL quedaría en logs: usar `fetch` con lectura en streaming y reconectar con el token nuevo tras el refresh o al expirar la sesión (`SESSION_MAX_HOURS`). Al recibir un evento, `reload()` del recurso de esa página.
+- **Infra**: latido cada 25 s (Cloudflare corta a los 100 s sin datos); comprobar que Traefik no acumula la respuesta.
+- **Atajo si se quiere ya**: recargar la lista cada 60 s mientras la pestaña está visible (`resource.reload()` existe en cada página; unas diez líneas por página, sin tocar el API).
+
 ## Documentación
 
 - [ ] ADRs de las decisiones del plan.
@@ -125,3 +137,11 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] Instalar PHP 8.3, Composer, Redis y Postgres en el script de configuración del entorno.
 - [ ] Guardar las claves de prueba como secretos del entorno. El certificado digital y la clave SOL reales no van a cloud.
 - [x] Crear los repos `desertica-backoffice` y `desertica-billing` y añadirlos a las sesiones.
+
+## Seguridad (auditoría del 17-11-2026)
+
+- [ ] **Reembolsos con la transacción abierta** (A10): el reembolso llama a Stripe o Culqi con una transacción de la base abierta. No hay riesgo de pagar dos veces, pero varios reembolsos lentos a la vez pueden agotar el pool. Arreglo: reclamar el reembolso con un UPDATE condicional (estado nuevo `PROCESSING` o columna `claimedAt`) y llamar a la pasarela fuera, como `claimCharge`. No se hizo porque cambia los estados del reembolso.
+- [ ] **Firma del webhook de Culqi** (A5): probarla con una clave de prueba antes de lanzar. Ya se rechaza un reembolso externo mayor que lo que queda por devolver; falta reconsultar el cargo a Culqi en los avisos de reembolso.
+- [ ] **Documentos de identidad sin cifrar** (A1): se buscan por coincidencia parcial (`contains`) en clientes y se comparan con la lista de bloqueados; cifrarlos rompe ambas cosas. Haría falta un índice ciego (HMAC) y búsqueda exacta.
+- [ ] **Retención de reservas** (A2): la política dice 5 años "o el plazo de prescripción tributaria, el que sea mayor"; anonimizar reservas viejas espera a que el contador fije ese plazo. Tampoco se borran eventos de webhook, avisos enviados ni la bitácora (la política no les da plazo).
+- [ ] **Pagos manuales** (A7): Finanzas revisa cada semana los pagos `MANUAL` contra el banco y la caja (proceso).

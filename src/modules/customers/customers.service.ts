@@ -94,6 +94,12 @@ export class CustomersService {
           ...(dto.locale ? { locale: dto.locale } : {}),
         },
       });
+      // Los enlaces de "mi reserva" enviados al correo anterior dejan de servir.
+      if (updated.email !== before.email) {
+        await tx.bookingAccessToken.deleteMany({
+          where: { booking: { customerId: id } },
+        });
+      }
       await this.audit.record(
         {
           actorUserId: actorId,
@@ -198,9 +204,13 @@ export class CustomersService {
         where: { ...ofCustomer, status: 'SIGNED' },
         data: { ...waiverCommon, signerName: ERASED },
       });
-      await tx.waiver.updateMany({
+      // Un descargo pendiente ya no se podrá firmar: se borra junto con su enlace.
+      await tx.waiver.deleteMany({
         where: { ...ofCustomer, status: 'PENDING' },
-        data: { ...waiverCommon, signerName: null },
+      });
+      await tx.paymentLink.updateMany({
+        where: { bookingId: { in: ids }, usedAt: null },
+        data: { usedAt: now },
       });
       for (const b of bookings) {
         // El receptor de un comprobante emitido se conserva por obligación tributaria.

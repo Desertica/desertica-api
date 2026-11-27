@@ -12,7 +12,7 @@ import {
   toBookingSummary,
 } from './booking.mappers';
 import { BookingQuery, PaymentStatusFilter } from './dto/booking.dto';
-import { paymentOptionsFor } from './payment-options';
+import { paymentOptionsFor, stripeEnabled } from './payment-options';
 
 type Db = PrismaService | Prisma.TransactionClient;
 
@@ -195,7 +195,7 @@ export class BookingViewService {
         firstName: p.firstName,
         lastName: p.lastName,
       })),
-      paymentOptions: paymentOptionsFor(b),
+      paymentOptions: paymentOptionsFor(b, stripeEnabled(this.config)),
       cancellationTiers: snapshot.tiers ?? [],
       waivers:
         b.status === 'CANCELLED'
@@ -224,7 +224,9 @@ export class BookingViewService {
       orderBy: { createdAt: 'asc' },
     });
     const api = this.config.get('PUBLIC_API_URL', { infer: true });
-    const secret = this.config.get('JWT_ACCESS_SECRET', { infer: true });
+    const secret =
+      this.config.get('LINK_SIGNING_SECRET', { infer: true }) ||
+      this.config.get('JWT_ACCESS_SECRET', { infer: true });
     return docs.map((d) => ({
       docType: d.docType,
       number: `${d.series.prefix}-${String(d.number).padStart(8, '0')}`,

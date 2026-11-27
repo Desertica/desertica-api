@@ -47,9 +47,10 @@ export type Permission = (typeof ALL_PERMISSIONS)[number];
 export const ADMIN_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS;
 
 /**
- * `operator`: reservas, calendario, clientes, pagos (reembolsos hasta un tope,
- * sin `refund-any`), comprobantes y reclamos. Sin `users:*`, `company:*`,
- * `settings:*` ni `documents:void`.
+ * `operator` (Operaciones: guías y atención al cliente). Reservas, calendario,
+ * clientes, pagos manuales cobrados en campo, reclamos y descargos (los guías
+ * necesitan las notas médicas). Sin reembolsos, emisión de comprobantes ni
+ * reportes de ventas: eso es de Finanzas.
  */
 export const OPERATOR_PERMISSIONS: readonly Permission[] = [
   'bookings:read',
@@ -63,11 +64,61 @@ export const OPERATOR_PERMISSIONS: readonly Permission[] = [
   'customers:write',
   'payments:read',
   'payments:write',
-  'payments:refund',
   'documents:read',
-  'documents:issue',
   'complaints:read',
   'complaints:write',
   'waivers:read',
-  'reports:read',
 ];
+
+/**
+ * `finance` (Finanzas: contabilidad y cobranzas). Reembolsa hasta el tope,
+ * emite y anula comprobantes y lee la bitácora para revisar pagos manuales.
+ */
+export const FINANCE_PERMISSIONS: readonly Permission[] = [
+  'bookings:read',
+  'departures:read',
+  'catalog:read',
+  'prices:read',
+  'customers:read',
+  'payments:read',
+  'payments:write',
+  'payments:refund',
+  'documents:read',
+  'documents:issue',
+  'documents:void',
+  'reports:read',
+  'company:read',
+  'settings:read',
+  'complaints:read',
+  'audit:read',
+];
+
+/**
+ * `readonly` (Solo lectura: socio, asesor o contador externo). Sin datos de
+ * clientes, descargos ni reclamos.
+ */
+export const READONLY_PERMISSIONS: readonly Permission[] = [
+  'bookings:read',
+  'departures:read',
+  'catalog:read',
+  'prices:read',
+  'payments:read',
+  'documents:read',
+  'reports:read',
+  'company:read',
+  'settings:read',
+];
+
+/**
+ * Permisos de las acciones delicadas: la operación que exige alguno de ellos
+ * pide además un login con Google reciente (`REAUTH_MAX_AGE_MINUTES`).
+ */
+export const RECENT_LOGIN_PERMISSIONS: ReadonlySet<Permission> = new Set([
+  'payments:refund',
+  'users:write',
+  'settings:write',
+  'company:write',
+  'legal:write',
+  'customers:erase',
+  'departures:cancel',
+]);

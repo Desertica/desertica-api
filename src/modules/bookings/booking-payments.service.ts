@@ -19,6 +19,7 @@ import { bookingPending, toPaymentDto } from './booking.mappers';
 import { generateToken } from './booking-support';
 import { CreatePaymentLinkDto, ManualPaymentDto } from './dto/booking.dto';
 import { links } from './links';
+import { stripeEnabled } from './payment-options';
 
 type Tx = Prisma.TransactionClient;
 
@@ -368,7 +369,12 @@ export class BookingPaymentsService {
       // Nunca más que el saldo de hoy.
       amountCents: Math.min(link.amountCents, pending),
       expiresAt: link.expiresAt,
-      paymentOptions: [...(link.currency === 'USD' ? ['STRIPE'] : []), 'CULQI'],
+      paymentOptions: [
+        ...(link.currency === 'USD' && stripeEnabled(this.config)
+          ? ['STRIPE']
+          : []),
+        'CULQI',
+      ],
     };
   }
 }
