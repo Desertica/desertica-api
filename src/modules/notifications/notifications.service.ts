@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
+import { BackgroundQueue } from '../../common/queue/background-queue';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TourTitlesService } from '../cms/tour-titles.service';
 import { redactEmails } from '../../common/logger/sanitize';
@@ -7,8 +8,9 @@ import { MAILER, type Mailer, MailMessage } from './mailer';
 import { langOf } from './templates/format';
 
 /**
- * Envía correos y deja constancia en `Notification`. Un fallo al enviar nunca
- * rompe la operación de negocio: queda registrado como `FAILED`.
+ * Envía correos y deja constancia en `Notification`. El envío va a la cola en
+ * segundo plano: un SMTP lento o caído no retrasa ni rompe la petición; el
+ * fallo queda registrado como `FAILED`.
  */
 @Injectable()
 export class NotificationsService {
@@ -17,6 +19,7 @@ export class NotificationsService {
   constructor(
     private readonly prisma: PrismaService,
     @Inject(MAILER) private readonly mailer: Mailer,
+    private readonly queue: BackgroundQueue,
     @Optional() private readonly titles?: TourTitlesService,
   ) {}
 
@@ -50,6 +53,11 @@ export class NotificationsService {
     }
   }
 
+  /**
+   * Crea la fila con `db` (así queda dentro de la transacción del llamador) y
+   * devuelve sin esperar al SMTP. El envío y el estado van con `this.prisma`:
+   * la transacción ya estará cerrada cuando corra.
+   */
   async sendEmail(
     message: MailMessage,
     options: { bookingId?: string } = {},
@@ -63,10 +71,23 @@ export class NotificationsService {
         toAddress: message.to,
       },
     });
-    try {
-      await this.mailer.send(await this.withTourTitle(message));
+    const queued = this.queue.enqueue(`email ${message.template}`, () =>
+      this.deliver(record.id, message),
+    );
+    if (!queued) {
+      this.logger.error(`Email ${message.template} dropped: queue full`);
       await db.notification.update({
         where: { id: record.id },
+        data: { status: 'FAILED', error: 'Cola de envío llena; no se envió' },
+      });
+    }
+  }
+
+  private async deliver(id: string, message: MailMessage): Promise<void> {
+    try {
+      await this.mailer.send(await this.withTourTitle(message));
+      await this.prisma.notification.update({
+        where: { id },
         data: { status: 'SENT', sentAt: new Date() },
       });
     } catch (error) {
@@ -75,8 +96,8 @@ export class NotificationsService {
         error instanceof Error ? error.message : String(error),
       );
       this.logger.error(`Email ${message.template} failed: ${text}`);
-      await db.notification.update({
-        where: { id: record.id },
+      await this.prisma.notification.update({
+        where: { id },
         data: { status: 'FAILED', error: text.slice(0, 500) },
       });
     }
