@@ -313,8 +313,14 @@ export class PaymentsService {
             },
           });
         } else {
-          // Sin saber si se cobró: no se marca fallido; el webhook lo resuelve.
-          if (error instanceof GatewayNotConfiguredError) {
+          // Un 4xx de Culqi es seguro que no cobró: el intento se cierra y libera el enlace.
+          // Sin saber si se cobró (red, 5xx): no se marca fallido; el webhook lo resuelve.
+          if (
+            error instanceof GatewayNotConfiguredError ||
+            (error instanceof GatewayError &&
+              error.httpStatus !== undefined &&
+              error.httpStatus < 500)
+          ) {
             await this.abandon(paymentId, error);
           }
           throw this.mapGatewayError(error);

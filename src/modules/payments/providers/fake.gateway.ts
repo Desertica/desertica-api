@@ -17,6 +17,7 @@ export const FAKE_WEBHOOK_SECRET = 'fake-webhook-secret';
  * Pasarela simulada (`PAYMENT_GATEWAY_MODE=fake` y pruebas). No mueve dinero.
  *
  * Tokens de Culqi simulados: `tok_ok` cobra, `tok_declined` rechaza,
+ * `tok_rejected` es un 4xx de Culqi que no es rechazo del banco,
  * `tok_3ds` pide 3DS (y cobra al reintentar con `authentication3DS`),
  * `tok_pending` deja el cargo sin resolver. Los webhooks son el
  * `GatewayEvent` en JSON firmado con HMAC en `x-fake-signature`
@@ -61,6 +62,16 @@ export class FakeGateway implements PaymentGateway {
       case 'tok_declined':
         return Promise.reject(
           new GatewayError('Card declined', 'insufficient_funds', true),
+        );
+      case 'tok_rejected':
+        // Culqi rechaza la petición (4xx que no es del banco): seguro no cobró.
+        return Promise.reject(
+          new GatewayError(
+            'Invalid token',
+            'invalid_request_error',
+            false,
+            400,
+          ),
         );
       case 'tok_3ds':
         payment = input.authentication3DS

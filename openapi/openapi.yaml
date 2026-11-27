@@ -641,9 +641,11 @@ paths:
       tags: [Webhooks]
       summary: Eventos de Culqi
       description: |
-        Culqi no documenta una firma para sus webhooks. El API no confía en el cuerpo: toma solo el `id` del evento
-        (`evt_test_…` / `evt_live_…`) y lo consulta en `GET /v2/events/{id}` con la clave secreta; los cargos se
-        vuelven a consultar también. 400 si falta el id o Culqi no conoce ese evento; 503 si no hay clave secreta.
+        Culqi no firma sus webhooks. El API no confía en el cuerpo: toma solo el id del objeto al que apunta
+        (`data.id` de un `charge` o `refund`, o `data.chargeId` de un `error`) y lo relee de Culqi con la clave
+        secreta; el `id` del evento (`evt_test_…` / `evt_live_…`) solo deduplica. 400 si falta el id del evento o
+        Culqi no conoce ese objeto; 200 si el evento no apunta a un cargo ni a una devolución; 503 si no hay clave
+        secreta.
       security: []
       requestBody:
         required: true
