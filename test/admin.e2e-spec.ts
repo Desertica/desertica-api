@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { BackgroundQueue } from '../src/common/queue/background-queue';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { limaDate } from '../src/common/time/lima';
@@ -898,6 +899,7 @@ describe('Administración (e2e)', () => {
         .post('/api/public/holds')
         .send({ departureId: dep.id, seats: 3 })
         .expect(201);
+      await app.get(BackgroundQueue).drain();
       const mails = mailer.sent.length;
 
       const res = await cancel(dep.id, {
@@ -941,6 +943,7 @@ describe('Administración (e2e)', () => {
           })
         ).releasedAt,
       ).not.toBeNull();
+      await app.get(BackgroundQueue).drain();
       const sent = mailer.sent
         .slice(mails)
         .filter((m) => m.template === 'booking_cancelled');
@@ -992,6 +995,7 @@ describe('Administración (e2e)', () => {
           .status,
       ).toBe('OPEN');
 
+      await app.get(BackgroundQueue).drain();
       const mails = mailer.sent.length;
       const res = await cancel(dep.id, {
         reason: 'Clima',
@@ -1016,6 +1020,7 @@ describe('Administración (e2e)', () => {
       expect(
         await prisma.refund.count({ where: { payment: { bookingId: a.id } } }),
       ).toBe(0);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(mails)
@@ -1027,6 +1032,7 @@ describe('Administración (e2e)', () => {
       const dep = await fx.departure();
       const a = await webBooking(dep.id);
       await pay(a.id, 20000);
+      await app.get(BackgroundQueue).drain();
       const mails = mailer.sent.length;
       const res = await cancel(dep.id, {
         reason: 'Sin guía',
@@ -1037,6 +1043,7 @@ describe('Administración (e2e)', () => {
         (await prisma.booking.findUniqueOrThrow({ where: { id: a.id } }))
           .status,
       ).toBe('CONFIRMED');
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(mails)

@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { BackgroundQueue } from '../src/common/queue/background-queue';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { ConfigService } from '@nestjs/config';
@@ -253,6 +254,7 @@ describe('Cumplimiento (e2e)', () => {
         currency: 'USD',
         bookingRef: 'DST-ABC123',
       });
+      await app.get(BackgroundQueue).drain();
       const before = mailer.sent.length;
       const res = await http()
         .post('/api/public/complaints')
@@ -269,6 +271,7 @@ describe('Cumplimiento (e2e)', () => {
         new Date(due.getTime() - 5 * 3_600_000).getUTCDay(),
       );
 
+      await app.get(BackgroundQueue).drain();
       const mail = mailer.sent
         .slice(before)
         .find((m) => m.template === 'complaint_received')!;
@@ -346,6 +349,7 @@ describe('Cumplimiento (e2e)', () => {
         .expect(201);
       const id = (created.body as Body).correlative as number;
       await http().get(`/api/complaints/${id}`).set(operator.auth).expect(200);
+      await app.get(BackgroundQueue).drain();
       const before = mailer.sent.length;
       const res = await http()
         .post(`/api/complaints/${id}/answer`)
@@ -358,6 +362,7 @@ describe('Cumplimiento (e2e)', () => {
         answer: 'Le devolvemos el 30 %.',
       });
       expect((res.body as Body).answeredAt).toBeTruthy();
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
