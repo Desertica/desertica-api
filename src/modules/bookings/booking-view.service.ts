@@ -12,7 +12,7 @@ import {
   toBookingSummary,
 } from './booking.mappers';
 import { BookingQuery, PaymentStatusFilter } from './dto/booking.dto';
-import { paymentOptionsFor } from './payment-options';
+import { paymentOptionsFor, stripeEnabled } from './payment-options';
 
 type Db = PrismaService | Prisma.TransactionClient;
 
@@ -195,7 +195,7 @@ export class BookingViewService {
         firstName: p.firstName,
         lastName: p.lastName,
       })),
-      paymentOptions: paymentOptionsFor(b),
+      paymentOptions: paymentOptionsFor(b, stripeEnabled(this.config)),
       cancellationTiers: snapshot.tiers ?? [],
       waivers:
         b.status === 'CANCELLED'

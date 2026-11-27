@@ -29,7 +29,6 @@ export class GatewayRegistry {
               secretKey: get('CULQI_SECRET_KEY'),
               publicKey: get('CULQI_PUBLIC_KEY'),
               apiUrl: get('CULQI_API_URL'),
-              webhookSecret: get('CULQI_WEBHOOK_SECRET'),
             }),
           };
   }

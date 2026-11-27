@@ -200,8 +200,6 @@ export const envSchema = Joi.object({
   CULQI_SECRET_KEY: Joi.string().allow('').default(''),
   CULQI_PUBLIC_KEY: Joi.string().allow('').default(''),
   CULQI_API_URL: Joi.string().uri().default('https://api.culqi.com/v2'),
-  /** Secreto compartido del webhook de Culqi (ver `CulqiGateway.parseWebhook`). */
-  CULQI_WEBHOOK_SECRET: Joi.string().allow('').default(''),
   /** Cada cuántos segundos se ejecutan los reembolsos pendientes (0 = apagado). */
   REFUND_SWEEP_SECONDS: Joi.number().integer().min(0).default(60),
 
@@ -290,7 +288,6 @@ export interface EnvVars {
   CULQI_SECRET_KEY: string;
   CULQI_PUBLIC_KEY: string;
   CULQI_API_URL: string;
-  CULQI_WEBHOOK_SECRET: string;
   REFUND_SWEEP_SECONDS: number;
   BILLING_MODE: 'live' | 'fake';
   BILLING_URL: string;

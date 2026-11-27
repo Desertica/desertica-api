@@ -20,6 +20,8 @@ export class LinkCulqiChargeDto {
   @IsString() @IsNotEmpty() @MaxLength(100) token!: string;
   @IsEmail() @MaxLength(254) email!: string;
   @IsOptional() @IsUUID() paymentId?: string;
+  /** `Culqi3DS.generateDevice()`; Culqi lo pide igual en el cargo y en el reintento 3DS. */
+  @IsOptional() @IsString() @MaxLength(100) deviceId?: string;
   @IsOptional() @IsObject() authentication3DS?: Record<string, unknown>;
 }
 
