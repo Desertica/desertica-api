@@ -427,6 +427,16 @@ describe('Pagos por pasarela (e2e)', () => {
       const declined = await culqiCharge(b, 'tok_declined').expect(201);
       expect(declined.body).toMatchObject({ status: 'FAILED' });
       expect((declined.body as Body).failureMessage).toBeTruthy();
+      // Un 4xx de Culqi que no es del banco: 502, y el intento queda cerrado.
+      await culqiCharge(b, 'tok_rejected').expect(502);
+      expect(
+        await prisma.payment.count({
+          where: {
+            bookingId: b.id,
+            status: { in: ['PENDING', 'REQUIRES_ACTION'] },
+          },
+        }),
+      ).toBe(0);
       expect((await booking(b.id)).status).toBe('PENDING_PAYMENT');
       const ok = await culqiCharge(b, 'tok_ok').expect(201);
       expect(ok.body).toMatchObject({ status: 'SUCCEEDED' });
@@ -541,6 +551,42 @@ describe('Pagos por pasarela (e2e)', () => {
         .send({ token: 'tok_pending', email: 'a@example.com' })
         .expect(404);
     });
+
+    it.each([
+      ['a declined card', 'tok_declined', 201],
+      ['a request Culqi refuses', 'tok_rejected', 502],
+    ])(
+      'after %s the same link can be paid again',
+      async (_case, token, status) => {
+        const b = await webBooking({ currency: 'PEN' });
+        const created = await http()
+          .post(`/api/bookings/${b.id}/payment-links`)
+          .set(admin.auth)
+          .send({ kind: 'FULL' })
+          .expect(201);
+        const link = created.body as Body;
+        const failed = await http()
+          .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+          .send({ token, email: 'a@example.com' })
+          .expect(status);
+        if (status === 201) {
+          expect(failed.body).toMatchObject({
+            status: 'FAILED',
+            failureMessage: 'Card declined',
+          });
+        }
+        const attempts = await prisma.payment.findMany({
+          where: { paymentLinkId: link.id },
+        });
+        expect(attempts.map((p) => p.status)).toEqual(['FAILED']);
+        const ok = await http()
+          .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+          .send({ token: 'tok_ok', email: 'a@example.com' })
+          .expect(201);
+        expect(ok.body).toMatchObject({ status: 'SUCCEEDED' });
+        expect((await booking(b.id)).status).toBe('CONFIRMED');
+      },
+    );
 
     it('charges a link through Culqi', async () => {
       const b = await webBooking({ currency: 'PEN' });

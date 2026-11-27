@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { Currency } from '../../../generated/prisma/client';
 import {
   CreatePaymentInput,
@@ -38,12 +39,19 @@ const text = (value: unknown): string =>
  * - `POST /v2/refunds`: `reason` es `duplicado`, `fraudulento` o
  *   `solicitud_comprador`; `status` vuelve como `Completa`, `Pendiente` o
  *   `Rechazado` (mayúsculas variables).
- * - Webhooks: Culqi **no documenta firma** del webhook. Por eso el cuerpo no
- *   se cree: solo se toma el id del evento y se consulta `GET /v2/events/{id}`
- *   con la clave secreta; un id que Culqi no conoce es un evento falso (400).
- *   Los cargos se vuelven a consultar con `GET /v2/charges/{id}`.
+ * - Un rechazo del banco responde 402 con `type` `card_error` u
+ *   `operacion_denegada` y el mensaje para el cliente en `user_message`; el
+ *   cargo releído trae `outcome.type: "operacion_denegada"` y `paid: false`.
+ * - Webhooks: Culqi **no firma** el webhook, y el id del evento que envía no es
+ *   uno que `GET /v2/events/{id}` acepte. Por eso del cuerpo solo se toma el id
+ *   del objeto al que apunta (`data.id` si `data.object` es `charge` o `refund`,
+ *   `data.chargeId` si es `error`, p. ej. `charge.creation.failed`) y ese objeto
+ *   se relee con la clave secreta (`GET /v2/charges/{id}` o `/v2/refunds/{id}`):
+ *   lo que Culqi responde es la verdad, y un id que Culqi no conoce es un evento
+ *   falso (400). El id y el tipo del evento enviado solo sirven para deduplicar.
  */
 export class CulqiGateway implements PaymentGateway {
+  private readonly logger = new Logger(CulqiGateway.name);
   readonly provider = 'CULQI' as const;
   readonly currencies: readonly Currency[] = ['USD', 'PEN'];
 
@@ -122,32 +130,20 @@ export class CulqiGateway implements PaymentGateway {
     let posted: Json;
     try {
       posted = JSON.parse(rawBody.toString('utf8')) as Json;
+      if (!posted || typeof posted !== 'object') throw new Error();
     } catch {
       throw new InvalidWebhookSignatureError('Body is not JSON');
     }
+    // Solo clave de deduplicación: Culqi usa ids de 25 caracteres (`evt_test_0CjjdWhFpEAZlxlz`).
     const eventId = typeof posted.id === 'string' ? posted.id : '';
-    // Culqi usa ids de 25 caracteres (`evt_test_0CjjdWhFpEAZlxlz`); otro largo ni se consulta.
     if (!/^evt_(test|live)_[A-Za-z0-9]{16}$/.test(eventId)) {
       throw new InvalidWebhookSignatureError('Missing Culqi event id');
     }
-
-    // Culqi no firma sus webhooks: el evento auténtico es el que Culqi devuelve.
-    let event: Json;
-    try {
-      event = await this.call('GET', `/events/${eventId}`);
-    } catch (error) {
-      // Evento inexistente: Culqi responde 400 `parameter_error` (o 404 `resource_error`).
-      // Un 401 (`authentication_error`) es nuestra clave mal puesta y sigue como error.
-      if (
-        error instanceof GatewayError &&
-        (error.code === 'parameter_error' || error.code === 'resource_error')
-      ) {
-        throw new InvalidWebhookSignatureError('Unknown Culqi event');
-      }
-      throw error;
-    }
-    const type = typeof event.type === 'string' ? event.type : 'unknown';
-    let data: unknown = event.data;
+    const type =
+      typeof posted.type === 'string' && /^[a-z0-9._]{1,64}$/i.test(posted.type)
+        ? posted.type
+        : 'unknown';
+    let data: unknown = posted.data;
     if (typeof data === 'string') {
       try {
         data = JSON.parse(data);
@@ -157,18 +153,55 @@ export class CulqiGateway implements PaymentGateway {
     }
     const d = (data && typeof data === 'object' ? data : {}) as Json;
 
-    if (d.object === 'refund' && typeof d.id === 'string') {
-      return { kind: 'refund', eventId, type, refund: this.fromRefund(d) };
-    }
-    if (d.object === 'charge' && typeof d.id === 'string') {
-      // El cargo se relee para tener su estado actual, no el del evento.
-      const payment = await this.retrievePayment(d.id);
-      if (payment.status === 'PENDING' && /fail/i.test(type)) {
-        payment.status = 'FAILED';
-      }
+    // Del cuerpo (sin firma) solo sale el id del objeto; su estado se relee de Culqi.
+    const chargeId =
+      d.object === 'charge' ? d.id : d.object === 'error' ? d.chargeId : null;
+    if (typeof chargeId === 'string') {
+      const payment = await this.reread(
+        chargeId,
+        /^chr_(test|live)_[A-Za-z0-9]{8,40}$/,
+        () => this.retrievePayment(chargeId),
+      );
       return { kind: 'payment', eventId, type, payment };
     }
+    if (d.object === 'refund' && typeof d.id === 'string') {
+      const id = d.id;
+      const refund = await this.reread(
+        id,
+        /^ref_(test|live)_[A-Za-z0-9]{8,40}$/,
+        async () => this.fromRefund(await this.call('GET', `/refunds/${id}`)),
+      );
+      return { kind: 'refund', eventId, type, refund };
+    }
+    // Solo la forma, nunca valores: el cuerpo puede traer datos de la tarjeta.
+    this.logger.warn(
+      `Ignored Culqi webhook: keys=${Object.keys(posted).join(',')} data.object=${typeof d.object === 'string' ? d.object.slice(0, 20) : typeof d.object}`,
+    );
     return { kind: 'ignored', eventId, type };
+  }
+
+  /** Relee un objeto de Culqi; un id mal formado o que Culqi no conoce es un webhook falso. */
+  private async reread<T>(
+    id: string,
+    format: RegExp,
+    read: () => Promise<T>,
+  ): Promise<T> {
+    if (!format.test(id)) {
+      throw new InvalidWebhookSignatureError('Bad Culqi object id');
+    }
+    try {
+      return await read();
+    } catch (error) {
+      // Objeto inexistente: Culqi responde 400 `parameter_error` (o 404). Un 401 es
+      // nuestra clave mal puesta y sigue como error.
+      if (
+        error instanceof GatewayError &&
+        (error.httpStatus === 400 || error.httpStatus === 404)
+      ) {
+        throw new InvalidWebhookSignatureError('Unknown Culqi object');
+      }
+      throw error;
+    }
   }
 
   private fromCharge(
@@ -221,8 +254,10 @@ export class CulqiGateway implements PaymentGateway {
     }
     return {
       ...base,
-      status: 'PENDING',
-      failureCode: typeof outcome.code === 'string' ? outcome.code : undefined,
+      // `operacion_denegada` (o `venta_denegada`): el banco lo rechazó y es definitivo.
+      status: /denegad/.test(text(outcome.type)) ? 'FAILED' : 'PENDING',
+      failureCode:
+        text(outcome.decline_code) || text(outcome.code) || undefined,
       failureMessage:
         typeof outcome.user_message === 'string'
           ? outcome.user_message
@@ -265,15 +300,25 @@ export class CulqiGateway implements PaymentGateway {
       );
     }
     if (!response.ok) {
-      const declined = json.type === 'card_error';
+      // Rechazo del banco: 402; el doc dice `card_error`, los eventos reales `operacion_denegada`.
+      const declined =
+        response.status === 402 ||
+        json.type === 'card_error' ||
+        json.type === 'operacion_denegada';
       throw new GatewayError(
-        text(json.user_message) || text(json.merchant_message) || 'Culqi error',
+        text(json.user_message) ||
+          text(json.userMessage) ||
+          text(json.merchant_message) ||
+          text(json.merchantMessage) ||
+          'Culqi error',
         // `type` (p. ej. `resource_error` en un 404) solo si no hay código.
         text(json.decline_code) ||
+          text(json.declineCode) ||
           text(json.code) ||
           text(json.type) ||
           undefined,
         declined,
+        response.status,
       );
     }
     return json;

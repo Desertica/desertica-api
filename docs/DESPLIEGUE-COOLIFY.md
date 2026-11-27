@@ -246,7 +246,7 @@ El certificado digital y la clave SOL **reales** solo existen en el servidor de 
 
 | Qué | Dónde | Detalle |
 |---|---|---|
-| Culqi | CulqiPanel → **Eventos** → **Webhooks** → **+Añadir**, URL `https://api-stg.desertica.pe/api/webhooks/culqi` | Ver §8.1. Culqi no firma sus webhooks: el API consulta cada evento a Culqi con la clave secreta antes de creerlo, así que no hay secreto que copiar. |
+| Culqi | CulqiPanel → **Eventos** → **Webhooks** → **+Añadir**, URL `https://api-stg.desertica.pe/api/webhooks/culqi` | Ver §8.1. Culqi no firma sus webhooks: el API relee de Culqi, con la clave secreta, el cargo o la devolución al que apunta cada evento, así que no hay secreto que copiar. |
 | CMS (Strapi) | Admin del CMS de staging > Settings > Webhooks, URL `https://api-stg.<dominio>/api/webhooks/cms` (o la URL interna del API si el CMS la alcanza) | Eventos `Entry: Publish` y `Unpublish`; cabecera `X-Webhook-Secret` = `CMS_WEBHOOK_SECRET`. Al publicar o despublicar un tour el API lo sincroniza solo (crea inactivo, refresca título, desactiva). Pasos en `docs/WEBHOOKS.md` del CMS. `Trigger` debe responder 200. Si Cloudflare tiene reglas anti-bots delante del API, dejar pasar esa ruta. |
 | Google (login) | Consola de Google Cloud | Cliente OAuth tipo "Aplicación web"; origen JS autorizado = URL del backoffice. |
 | Correo | Admin de Google Workspace | Autorizar la IP del servidor en el relay SMTP y configurar SPF, DKIM y DMARC del dominio. |

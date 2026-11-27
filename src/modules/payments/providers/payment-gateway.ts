@@ -90,12 +90,16 @@ export class InvalidWebhookSignatureError extends Error {}
 /** La pasarela no está configurada (faltan claves): el API responde 503. */
 export class GatewayNotConfiguredError extends Error {}
 
-/** La pasarela rechazó o falló la llamada. `declined` = el banco dijo que no. */
+/**
+ * La pasarela rechazó o falló la llamada. `declined` = el banco dijo que no.
+ * `httpStatus` = la pasarela respondió con ese error (4xx: seguro no cobró).
+ */
 export class GatewayError extends Error {
   constructor(
     message: string,
     readonly code: string | undefined,
     readonly declined = false,
+    readonly httpStatus?: number,
   ) {
     super(message);
   }
