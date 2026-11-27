@@ -44,4 +44,4 @@ Usa **Node 22**.
 
 ## Ramas
 
-`main` es solo la base; el trabajo entra por PR a `develop`, `develop` -> `staging` (pruebas) y `staging` -> `prod` (producción). Rama de trabajo: `feat/*`, `fix/*` o `chore/*`, se borra al mezclar. Los checks y la protección están en `docs/PROTECCION-RAMAS.md`; los workflows son `.github/workflows/{ci,security,policy}.yml` y los editas con un PR normal.
+`main` es solo la base. El trabajo va **directo a `develop`** con commit y push, sin ramas ni PR (antes de empujar: `git pull --rebase origin develop`; tras empujar, revisar que la CI quede en verde). Solo se usa PR para promover `develop` -> `staging` (pruebas) y `staging` -> `prod` (producción); esas dos ramas siguen protegidas (PR y checks obligatorios). `develop` solo prohíbe borrarla y reescribir su historial. Los checks están en `docs/PROTECCION-RAMAS.md`; los workflows son `.github/workflows/{ci,security,policy}.yml`.
