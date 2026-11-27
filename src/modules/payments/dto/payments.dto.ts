@@ -10,10 +10,6 @@ import {
 } from 'class-validator';
 import { PaymentKind } from '../../../generated/prisma/enums';
 
-export class CreatePaymentDto {
-  @IsEnum(PaymentKind) kind!: PaymentKind;
-}
-
 /** Cuerpo de `createLinkCulqiCharge`: el tipo y el monto los fija el enlace. */
 export class LinkCulqiChargeDto {
   /** Token de Culqi.js. Nunca un número de tarjeta. */

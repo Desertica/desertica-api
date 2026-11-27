@@ -72,6 +72,8 @@ enum BookingSource {
 }
 
 enum PaymentProvider {
+  // Ya no se usa (no hay pasarela Stripe). Se deja porque quitarlo exige recrear el
+  // tipo en Postgres y la migración fallaría si queda alguna fila antigua con este valor.
   STRIPE
   CULQI
   MANUAL

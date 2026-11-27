@@ -91,7 +91,8 @@ export class RefundsExecutor {
     });
     if (!head || head.status !== 'PENDING') return 'skipped';
     const provider = head.payment.provider;
-    if (provider === 'MANUAL') return 'manual';
+    // `STRIPE` solo puede venir de datos antiguos: sin pasarela, se devuelve a mano.
+    if (provider !== 'CULQI') return 'manual';
     if (!head.payment.providerRef) return 'skipped';
     const gateway = this.gateways.get(provider);
 
@@ -126,13 +127,8 @@ export class RefundsExecutor {
               if (transient && error instanceof GatewayNotConfiguredError) {
                 return 'retry'; // no se llegó a llamar a la pasarela
               }
-              if (transient && provider === 'STRIPE') {
-                // Stripe es idempotente por `refund:<id>`: reintentar es seguro.
-                this.logger.warn(`Refund ${refundId} will be retried: ${code}`);
-                return 'retry';
-              }
               if (transient) {
-                // Culqi (sin clave de idempotencia verificada): la llamada pudo
+                // Culqi no tiene clave de idempotencia verificada: la llamada pudo
                 // aplicarse aunque no se viera la respuesta. Antes de reintentar
                 // se mira el cargo; si no se puede confirmar, no se reintenta a ciegas.
                 const applied = await this.alreadyApplied(

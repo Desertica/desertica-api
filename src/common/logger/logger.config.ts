@@ -8,7 +8,6 @@ export const REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.headers["x-booking-token"]',
-  'req.headers["stripe-signature"]',
   'res.headers["set-cookie"]',
 ];
 

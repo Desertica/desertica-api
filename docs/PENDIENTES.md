@@ -19,7 +19,7 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 - [ ] RUC (llega en unos días). *Tú. Bloquea: todo lo fiscal y las altas de producción.*
 - [ ] SUNAT: afiliar el RUC como emisor electrónico por sistema propio, registrar el certificado digital, crear un usuario SOL secundario con permiso solo de facturación electrónica y definir las series de boleta y factura. Los nombres exactos de cada trámite los confirma el contador.
 - [ ] Obtener el certificado digital (firma) de un proveedor acreditado.
-- [ ] Alta de producción en Culqi y en Stripe (entidad extranjera y/o peruana). Verificar si Stripe acepta una cuenta peruana, si Culqi ofrece algo equivalente a Apple Pay y Google Pay en soles, y verificar el dominio para Apple Pay.
+- [ ] Alta de producción en Culqi. Verificar si Culqi ofrece algo equivalente a Apple Pay y Google Pay.
 - [ ] Meta Business y Pixel; en v2, WhatsApp Business API (aprobación de plantillas).
 - [ ] Cuentas de GA4, GTM y Search Console; Google Workspace (calendario, login de staff, correo).
 
@@ -46,7 +46,7 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 - [ ] Catálogos de SUNAT (motivos de nota de crédito y débito, afectación del IGV): `desertica-billing` los contrastó con una fuente de 2017 y con Greenter porque no pudo leer el Anexo 8 oficial; confirmar.
 - [ ] Unidad de medida de los tours (hoy `NIU`; ¿`ZZ` para servicios?) y si aplica la leyenda 2004 «Agencia de Viaje – Paquete turístico».
 - [ ] Si habrá boletas sin identificar al cliente (hoy el receptor es obligatorio).
-- [ ] Contabilidad (standby): exportación CSV de ventas y pagos, reporte de conciliación con Stripe y Culqi, formato PLE y alerta de vencimiento del certificado.
+- [ ] Contabilidad (standby): exportación CSV de ventas y pagos, reporte de conciliación con Culqi, formato PLE y alerta de vencimiento del certificado.
 
 ## Producto: v2 (después de las primeras ventas)
 
@@ -78,7 +78,7 @@ Repos: `desertica-web`, `desertica-cms`, `desertica-api` (este), `desertica-back
 
 Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimiento y la prueba de conformidad con el contrato. Hecho en la Ola 2: API-A (conformidad con el contrato reconciliado, administración, correo real, descargos versionados y endurecimiento) y API-B (pagos por pasarela, reembolsos, disputas y comprobantes). Las 98 operaciones del contrato están implementadas (se comprueba con `SHOW_MISSING_OPERATIONS=1 npm run test:e2e -- test/routes`). Lo que sigue sin tachar es trabajo que depende de claves, red, trámites o decisiones del negocio:
 
-- [x] **Pasarelas (Ola 2)**: `createBookingStripeIntent`, `createBookingCulqiCharge`, `createLinkStripeIntent`, `createLinkCulqiCharge`, `receiveStripeWebhook`, `receiveCulqiWebhook`, interfaz `PaymentGateway` con adaptadores `StripeGateway`, `CulqiGateway` y `FakeGateway`, `WebhookEvent` idempotente. Probado solo con la pasarela simulada, firmas generadas en local y servidores HTTP de prueba: **ninguna llamada a Stripe o Culqi reales** (hosts bloqueados).
+- [x] **Pasarelas (Ola 2)**: `createBookingCulqiCharge`, `createLinkCulqiCharge`, `receiveCulqiWebhook`, interfaz `PaymentGateway` con adaptadores `CulqiGateway` y `FakeGateway`, `WebhookEvent` idempotente. Stripe se quitó del todo (no acepta empresas peruanas). Probado con la pasarela simulada y servidores HTTP de prueba.
 - [x] **Pago que llega después del vencimiento (Ola 2)**: reactiva la reserva (`payment_timeout`) si la salida sigue abierta y hay cupo; si no, o si una persona la canceló, reembolsa solo y avisa al staff. Confirmar con negocio si el staff prefiere decidir caso a caso en vez de reembolso automático.
 - [x] **Reembolsos (Ola 2)**: `createRefund`, `listRefunds`, `completeRefund` (operación nueva, para pagos manuales). `RefundSweeper` ejecuta cada `REFUND_SWEEP_SECONDS` (60) los `Refund` en `PENDING` que dejan la cancelación y la reprogramación: el cliente espera hasta un minuto; si se quiere inmediato, llamar a `RefundsExecutor.execute` desde `BookingLifecycleService` tras cancelar (no se tocó ese archivo para no pisar a API-A). El tope del operador cuenta lo ya devuelto de toda la reserva más lo pendiente.
 - [ ] **Reembolsos de pagos manuales**: quedan `PENDING` hasta que el staff los confirme con `completeRefund`; falta una vista en el backoffice y un aviso cuando hay pendientes de más de N días.
@@ -88,13 +88,13 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Contador (comprobantes)**: tratamiento de depósito y saldo (hoy un comprobante por pago, con «Anticipo: » en el ítem del depósito); fuente y regla del tipo de cambio (`EXCHANGE_RATE_FALLBACK=3.7500` no es oficial; se espera `Setting.exchangeRates` por fecha); motivos de nota de crédito (hoy `06` devolución total y `09` disminución en el valor); si billing enviará boletas una a una o por resumen (`BILLING_SUBMISSION`).
 - [ ] **Emisión de pagos manuales**: la recoge el barrido del worker (hasta `DOCUMENT_WORKER_SECONDS`, 15 s); si se quiere inmediata, llamar a `DocumentsService.autoIssueForPayment` desde `BookingPaymentsService.recordManual`.
 - [x] **Pagos y disputas**: `listPayments`, `getPayment`, `listDisputes`, `getDispute`, `updateDispute`, `downloadDisputeEvidence` (ZIP con confirmación, políticas aceptadas con su texto, descargos, manifiesto, pagos, comprobantes y auditoría).
-- [ ] **Evidencia de disputas**: el descargo no guarda el texto firmado ni un PDF (ver «Texto del descargo»); el paquete solo trae quién firmó, cuándo y desde qué IP. Enviar la evidencia a Stripe/Culqi sigue siendo manual.
-- [x] **Culqi contrastado con su documentación** (nov. 2026): 3DS (`action_code: "REVIEW"`, reintento con `authentication_3DS` y el mismo `device_finger_print_id`), `reason` de reembolsos, estados `Completa`/`Pendiente`/`Rechazado`, monto entero en céntimos. Culqi no documenta firma de webhooks: el API consulta `GET /v2/events/{id}` (se retiró `CULQI_WEBHOOK_SECRET`).
+- [ ] **Evidencia de disputas**: el descargo no guarda el texto firmado ni un PDF (ver «Texto del descargo»); el paquete solo trae quién firmó, cuándo y desde qué IP. Enviar la evidencia a Culqi sigue siendo manual.
+- [x] **Culqi contrastado con su documentación** (nov. 2026): 3DS (`action_code: "REVIEW"`, reintento con `authentication_3DS` y el mismo `device_finger_print_id`), `reason` de reembolsos, estados `Completa`/`Pendiente`/`Rechazado`, monto entero en céntimos. Culqi no firma sus webhooks: el API relee de Culqi el cargo o la devolución al que apunta el evento (se retiró `CULQI_WEBHOOK_SECRET`).
 - [ ] **Culqi con claves reales**: probar la tabla de §8.1 de `DESPLIEGUE-COOLIFY.md`; confirmar el código HTTP del cargo exitoso (la documentación dice 200 y 201 en páginas distintas) y que no hay eventos de contracargo (hoy solo se abre una disputa si el cargo trae `dispute: true`).
 - [ ] **Culqi Checkout v4 en retiro**: Culqi anuncia que dejará de estar disponible; migrar la web al Checkout Custom (`js.culqi.com/checkout-js`).
 - [ ] **Pagos de prueba con claves reales**: crear un intent y un cargo de prueba, confirmar Apple Pay/Google Pay con el Express Checkout Element y registrar los webhooks (ver el informe de la Ola 2).
 - [ ] **Alertas al staff**: `StaffAlertsService` escribe en el log y envía la plantilla `payment_staff_alert` a `STAFF_NOTIFY_EMAIL`; falta la plantilla real y un canal que no sea correo (WhatsApp o Slack).
-- [ ] **Webhooks fuera de orden**: un reembolso, una disputa o un pago que llega antes de que exista o se acredite el cobro responde 409 y depende de que la pasarela reenvíe (Stripe reintenta durante días); si pasa de ese plazo hay que reconciliar a mano.
+- [ ] **Webhooks fuera de orden**: un reembolso, una disputa o un pago que llega antes de que exista o se acredite el cobro responde 409 y depende de que Culqi reenvíe el evento; si pasa de ese plazo hay que reconciliar a mano.
 - [ ] **Reembolso de Culqi con respuesta perdida**: si la llamada se agota, el API consulta el cargo (`amount_refunded`) antes de reintentar; si no puede confirmar, deja el reembolso en `FAILED` y avisa (el staff revisa el panel de Culqi). Revisar cuando se verifique la API.
 - [x] **Administración**: `getCompany`/`saveCompany`, `listSeries`/`createSeries`, bloqueos (`listBlockedIdentities`, `createBlockedIdentity`, nuevo `deleteBlockedIdentity`; se aplican a bloqueos de cupo, reservas web y reclamos), `getDashboardSummary`, `getSalesReport` (json y csv), `eraseCustomer` y `cancelDeparture`.
 - [ ] **Reclamos y bloqueos**: un reclamo de una IP o correo bloqueado se rechaza con 403, como pidió el encargo. El Libro de Reclamaciones debe estar siempre disponible para el consumidor: confirmar con el abogado si el bloqueo debe valer allí (la alternativa es recibir el reclamo y solo marcarlo).
@@ -133,14 +133,14 @@ Hoy las listas de reservas, pagos, disputas, reclamos y mensajes solo cambian al
 
 ## Entorno cloud (a configurar antes de las sesiones en paralelo)
 
-- [ ] Permitir en la red del entorno los hosts de Stripe (test), Culqi (sandbox), SUNAT beta, Google, Meta y los registros de paquetes (Packagist, npm).
+- [ ] Permitir en la red del entorno los hosts de Culqi (sandbox), SUNAT beta, Google, Meta y los registros de paquetes (Packagist, npm).
 - [ ] Instalar PHP 8.3, Composer, Redis y Postgres en el script de configuración del entorno.
 - [ ] Guardar las claves de prueba como secretos del entorno. El certificado digital y la clave SOL reales no van a cloud.
 - [x] Crear los repos `desertica-backoffice` y `desertica-billing` y añadirlos a las sesiones.
 
 ## Seguridad (auditoría del 17-11-2026)
 
-- [ ] **Reembolsos con la transacción abierta** (A10): el reembolso llama a Stripe o Culqi con una transacción de la base abierta. No hay riesgo de pagar dos veces, pero varios reembolsos lentos a la vez pueden agotar el pool. Arreglo: reclamar el reembolso con un UPDATE condicional (estado nuevo `PROCESSING` o columna `claimedAt`) y llamar a la pasarela fuera, como `claimCharge`. No se hizo porque cambia los estados del reembolso.
+- [ ] **Reembolsos con la transacción abierta** (A10): el reembolso llama a Culqi con una transacción de la base abierta. No hay riesgo de pagar dos veces, pero varios reembolsos lentos a la vez pueden agotar el pool. Arreglo: reclamar el reembolso con un UPDATE condicional (estado nuevo `PROCESSING` o columna `claimedAt`) y llamar a la pasarela fuera, como `claimCharge`. No se hizo porque cambia los estados del reembolso.
 - [ ] **Firma del webhook de Culqi** (A5): probarla con una clave de prueba antes de lanzar. Ya se rechaza un reembolso externo mayor que lo que queda por devolver; falta reconsultar el cargo a Culqi en los avisos de reembolso.
 - [ ] **Documentos de identidad sin cifrar** (A1): se buscan por coincidencia parcial (`contains`) en clientes y se comparan con la lista de bloqueados; cifrarlos rompe ambas cosas. Haría falta un índice ciego (HMAC) y búsqueda exacta.
 - [ ] **Retención de reservas** (A2): la política dice 5 años "o el plazo de prescripción tributaria, el que sea mayor"; anonimizar reservas viejas espera a que el contador fije ese plazo. Tampoco se borran eventos de webhook, avisos enviados ni la bitácora (la política no les da plazo).

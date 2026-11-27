@@ -17,13 +17,15 @@ export const FAKE_WEBHOOK_SECRET = 'fake-webhook-secret';
  * Pasarela simulada (`PAYMENT_GATEWAY_MODE=fake` y pruebas). No mueve dinero.
  *
  * Tokens de Culqi simulados: `tok_ok` cobra, `tok_declined` rechaza,
+ * `tok_rejected` es un 4xx de Culqi que no es rechazo del banco,
  * `tok_3ds` pide 3DS (y cobra al reintentar con `authentication3DS`),
  * `tok_pending` deja el cargo sin resolver. Los webhooks son el
  * `GatewayEvent` en JSON firmado con HMAC en `x-fake-signature`
  * (ver `signFakeEvent`).
  */
 export class FakeGateway implements PaymentGateway {
-  readonly currencies: readonly Currency[];
+  readonly provider = 'CULQI' as const;
+  readonly currencies: readonly Currency[] = ['USD', 'PEN'];
   readonly payments = new Map<string, GatewayPayment>();
   readonly refunds: GatewayRefund[] = [];
   /** Cuántas veces se llamó a `createPayment` (comprueba la idempotencia). */
@@ -33,10 +35,6 @@ export class FakeGateway implements PaymentGateway {
   refundFailureCode = 'refund_failed';
   /** El reembolso se aplica pero la respuesta se pierde (`unreachable`): el caso ambiguo. */
   loseRefundResponse = false;
-
-  constructor(readonly provider: 'STRIPE' | 'CULQI') {
-    this.currencies = provider === 'STRIPE' ? ['USD'] : ['USD', 'PEN'];
-  }
 
   publicKey(): string {
     return `pk_fake_${this.provider.toLowerCase()}`;
@@ -58,23 +56,22 @@ export class FakeGateway implements PaymentGateway {
       currency: input.currency,
       metadata,
     };
-    if (this.provider === 'STRIPE') {
-      const providerRef = `pi_fake_${randomUUID()}`;
-      const payment: GatewayPayment = {
-        ...base,
-        providerRef,
-        status: 'PENDING',
-        clientSecret: `${providerRef}_secret_fake`,
-      };
-      this.payments.set(providerRef, payment);
-      return Promise.resolve(payment);
-    }
     const providerRef = `chr_fake_${randomUUID()}`;
     let payment: GatewayPayment;
     switch (input.token) {
       case 'tok_declined':
         return Promise.reject(
           new GatewayError('Card declined', 'insufficient_funds', true),
+        );
+      case 'tok_rejected':
+        // Culqi rechaza la petición (4xx que no es del banco): seguro no cobró.
+        return Promise.reject(
+          new GatewayError(
+            'Invalid token',
+            'invalid_request_error',
+            false,
+            400,
+          ),
         );
       case 'tok_3ds':
         payment = input.authentication3DS

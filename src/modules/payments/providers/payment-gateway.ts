@@ -10,14 +10,12 @@ export type GatewayPaymentStatus =
   'PENDING' | 'REQUIRES_ACTION' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 
 export interface GatewayPayment {
-  /** Id del intent (Stripe) o del cargo (Culqi). */
+  /** Id del cargo en Culqi. */
   providerRef: string;
   status: GatewayPaymentStatus;
   amountCents: number;
   currency: Currency;
   method?: Extract<PaymentMethod, 'CARD' | 'WALLET'>;
-  /** Solo Stripe: lo usa el navegador para confirmar el pago. */
-  clientSecret?: string;
   /** Solo Culqi: autenticación 3DS pendiente en el navegador. */
   action?: { type: 'THREE_DS'; parameters: Record<string, unknown> };
   failureCode?: string;
@@ -92,25 +90,29 @@ export class InvalidWebhookSignatureError extends Error {}
 /** La pasarela no está configurada (faltan claves): el API responde 503. */
 export class GatewayNotConfiguredError extends Error {}
 
-/** La pasarela rechazó o falló la llamada. `declined` = el banco dijo que no. */
+/**
+ * La pasarela rechazó o falló la llamada. `declined` = el banco dijo que no.
+ * `httpStatus` = la pasarela respondió con ese error (4xx: seguro no cobró).
+ */
 export class GatewayError extends Error {
   constructor(
     message: string,
     readonly code: string | undefined,
     readonly declined = false,
+    readonly httpStatus?: number,
   ) {
     super(message);
   }
 }
 
 /**
- * Todo lo que mueve dinero pasa por esta interfaz. Hay un adaptador por
- * pasarela (`StripeGateway`, `CulqiGateway`) y uno falso para pruebas.
+ * Todo lo que mueve dinero pasa por esta interfaz: `CulqiGateway` y uno falso
+ * para pruebas (`FakeGateway`).
  */
 export interface PaymentGateway {
-  readonly provider: Extract<PaymentProvider, 'STRIPE' | 'CULQI'>;
+  readonly provider: Extract<PaymentProvider, 'CULQI'>;
   readonly currencies: readonly Currency[];
-  /** Clave que el navegador necesita (Stripe: publishable key). */
+  /** Clave pública que el navegador necesita (Culqi.js). */
   publicKey(): string;
   createPayment(input: CreatePaymentInput): Promise<GatewayPayment>;
   retrievePayment(providerRef: string): Promise<GatewayPayment>;

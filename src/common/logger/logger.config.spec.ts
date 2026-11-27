@@ -2,8 +2,8 @@ import { redactUrl } from './logger.config';
 
 describe('redactUrl', () => {
   it('masks payment link tokens, waiver tokens and signed-link signatures', () => {
-    expect(redactUrl('/api/public/payment-links/abc123/stripe-intent')).toBe(
-      '/api/public/payment-links/[redacted]/stripe-intent',
+    expect(redactUrl('/api/public/payment-links/abc123/culqi-charge')).toBe(
+      '/api/public/payment-links/[redacted]/culqi-charge',
     );
     expect(redactUrl('/api/public/waivers/tok-9')).toBe(
       '/api/public/waivers/[redacted]',
@@ -20,6 +20,6 @@ describe('redactUrl', () => {
     expect(redactUrl('/api/payments?status=SUCCEEDED&page=2')).toBe(
       '/api/payments?status=SUCCEEDED&page=2',
     );
-    expect(redactUrl('/api/webhooks/stripe')).toBe('/api/webhooks/stripe');
+    expect(redactUrl('/api/webhooks/culqi')).toBe('/api/webhooks/culqi');
   });
 });

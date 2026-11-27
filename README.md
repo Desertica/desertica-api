@@ -61,7 +61,7 @@ src/
                           pago, cancelación, reprogramación, vencimientos
     admin/                Empresa y series, bloqueos de correos e IP, panel y reporte de ventas,
                           mensajes de contacto
-    payments/             Pasarelas (Stripe, Culqi, simulada), webhooks, reembolsos, disputas
+    payments/             Pasarelas (Culqi, simulada), webhooks, reembolsos, disputas
     billing/, documents/  Cliente de desertica-billing, comprobantes, cola y almacenamiento
     customers/, compliance/ Clientes, descargos, textos legales y reclamos
     notifications/, alerts/ Correo (plantillas, drivers) y avisos al staff
@@ -101,9 +101,8 @@ El texto se escribe en el backoffice (Configuración). `POST /legal-documents` c
 
 ### Pagos por pasarela
 
-Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payments/providers/payment-gateway.ts`) con tres adaptadores: `StripeGateway` (PaymentIntents con métodos automáticos para Apple Pay y Google Pay; solo USD), `CulqiGateway` (cargo con el token de Culqi.js; USD y PEN) y `FakeGateway` (`PAYMENT_GATEWAY_MODE=fake`, solo desarrollo y pruebas).
+Todo lo que mueve dinero pasa por la interfaz `PaymentGateway` (`modules/payments/providers/payment-gateway.ts`) con dos adaptadores: `CulqiGateway` (cargo con el token de Culqi.js; USD y PEN) y `FakeGateway` (`PAYMENT_GATEWAY_MODE=fake`, solo desarrollo y pruebas).
 
-- **Flujo Stripe**: `createBookingStripeIntent` crea un `Payment` en `PENDING` y devuelve `clientSecret`; el navegador confirma con Stripe.js; **solo el webhook** (`/api/webhooks/stripe`) acredita el pago.
 - **Flujo Culqi**: el navegador obtiene el token con Culqi.js y llama `createBookingCulqiCharge`; el API cobra. Si el banco pide 3DS, la respuesta trae `action: THREE_DS`: el navegador ejecuta Culqi3DS y reenvía el mismo token con `paymentId` y `authentication3DS`. El resultado servidor a servidor de Culqi y su webhook pasan por el mismo procesador (`PaymentEventsService`), idempotente por `WebhookEvent (provider, eventId)`.
 - **Importe y moneda** salen siempre de la reserva o del enlace, nunca del cliente. Un evento con importe o moneda distintos al `Payment` se rechaza (`amount_mismatch`) y avisa al staff.
 - **Pago tardío**: un pago confirmado sobre una reserva vencida por falta de pago (`payment_timeout`) la reactiva si la salida sigue abierta y hay cupo; si no, o si una persona la canceló, se crea un `Refund` automático y se avisa al staff. Un pago de más (dos cobros simultáneos) reembolsa el excedente.
@@ -162,7 +161,7 @@ Ver `.env.example`. Se validan al arrancar con un esquema Joi (`src/config/env.v
 | `STAFF_NOTIFY_EMAIL` | Destino de avisos internos (contacto, reclamos, alertas de cobros); obligatoria en producción |
 | `PAYMENT_WINDOW_MINUTES`, `EXPIRY_SWEEP_SECONDS` | Plazo para pagar una reserva web y frecuencia del barrido de vencimientos |
 | `THROTTLE_SCALE` | Multiplica los límites por IP; solo válida con `NODE_ENV=test` (la usan los e2e) |
-| `PAYMENT_GATEWAY_MODE`, `STRIPE_*`, `CULQI_*`, `REFUND_SWEEP_SECONDS` | Pasarelas (`fake` solo en desarrollo y pruebas) y barrido de reembolsos |
+| `PAYMENT_GATEWAY_MODE`, `CULQI_*`, `REFUND_SWEEP_SECONDS` | Pasarelas (`fake` solo en desarrollo y pruebas) y barrido de reembolsos |
 | `BILLING_MODE`, `BILLING_URL`, `BILLING_SERVICE_TOKEN`, `BILLING_SUBMISSION`, `DOCUMENT_STORAGE`, `DOCUMENT_STORAGE_DIR`, `DOCUMENT_S3_*`, `DOCUMENT_WORKER_SECONDS`, `EXCHANGE_RATE_FALLBACK` | Comprobantes (ver "Comprobantes") |
 | `REFRESH_COOKIE_SECURE` | Atributo `Secure` de la cookie `desertica_refresh`; solo se puede apagar fuera de producción |
 | `MAIL_DRIVER`, `SMTP_*`, `MAIL_FROM`, `MAIL_REPLY_TO` | Correo saliente (ver "Correo"); producción exige `smtp` con TLS |

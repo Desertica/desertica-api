@@ -304,7 +304,6 @@ describe('Reservas (e2e)', () => {
         body.booking.waivers.filter((w: Body) => w.passengerName),
       ).toHaveLength(2);
       expect(body.paymentOptions).toEqual([
-        { provider: 'STRIPE', kinds: ['DEPOSIT'] },
         { provider: 'CULQI', kinds: ['DEPOSIT'] },
       ]);
 
@@ -337,6 +336,7 @@ describe('Reservas (e2e)', () => {
       });
       expect(audit).toBe(1);
 
+      await app.get(BackgroundQueue).drain();
       const mail = mailer.sent.find(
         (m) => m.to === row.customerId || (m.data as Body).reference === ref,
       );
@@ -966,6 +966,7 @@ describe('Reservas (e2e)', () => {
     it('sends the confirmation email unless told not to', async () => {
       const dep = await fx.departure();
       const email = `manual-${rand()}@example.com`;
+      await app.get(BackgroundQueue).drain();
       const before = mailer.sent.length;
       await http()
         .post('/api/bookings')
@@ -977,6 +978,7 @@ describe('Reservas (e2e)', () => {
           }),
         )
         .expect(201);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent
           .slice(before)
@@ -1073,6 +1075,7 @@ describe('Reservas (e2e)', () => {
         paidCents: 20000,
         pendingCents: 0,
       });
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent.some(
           (m) =>
@@ -1231,7 +1234,7 @@ describe('Reservas (e2e)', () => {
         reference,
         kind: 'DEPOSIT',
         amountCents: 6000,
-        paymentOptions: ['STRIPE', 'CULQI'],
+        paymentOptions: ['CULQI'],
       });
       await http().get('/api/public/payment-links/unknown').expect(404);
       await prisma.paymentLink.update({
@@ -1241,6 +1244,7 @@ describe('Reservas (e2e)', () => {
       await http()
         .get(`/api/public/payment-links/${(full.body as Body).token}`)
         .expect(410);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent.some(
           (m) =>
@@ -1380,6 +1384,7 @@ describe('Reservas (e2e)', () => {
         .set(operator.auth)
         .send({ reason: 'x', refund: 'POLICY' })
         .expect(409);
+      await app.get(BackgroundQueue).drain();
       expect(mailer.sent.some((m) => m.template === 'booking_cancelled')).toBe(
         true,
       );
@@ -1911,6 +1916,7 @@ describe('Reservas (e2e)', () => {
           where: { entityId: unpaid.id, action: 'booking.expire' },
         }),
       ).toBe(1);
+      await app.get(BackgroundQueue).drain();
       expect(
         mailer.sent.some(
           (m) =>
@@ -2433,11 +2439,10 @@ describe('Reservas (e2e)', () => {
         expect((await view()).paymentOptions).toEqual([]);
       });
 
-      it('offers Stripe too in USD and nothing once cancelled', async () => {
+      it('offers Culqi in USD and nothing once cancelled', async () => {
         const dep = await fx.departure();
         const created = await webBooking(dep.id);
         expect(created.body.paymentOptions).toEqual([
-          { provider: 'STRIPE', kinds: ['FULL'] },
           { provider: 'CULQI', kinds: ['FULL'] },
         ]);
         await http()

@@ -35,7 +35,7 @@ describe('Pagos por pasarela (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
   let admin: TestSession;
-  let stripe: FakeGateway;
+  let culqi: FakeGateway;
   let fx: CatalogFixture;
   const LOCALE = locale();
   const http = () => request(app.getHttpServer());
@@ -51,7 +51,7 @@ describe('Pagos por pasarela (e2e)', () => {
     );
     prisma = app.get(PrismaService);
     const registry = app.get(GatewayRegistry);
-    stripe = registry.get('STRIPE') as FakeGateway;
+    culqi = registry.get('CULQI') as FakeGateway;
     admin = await loginAs(app, 'admin');
     fx = await createCatalog(app);
   });
@@ -112,16 +112,16 @@ describe('Pagos por pasarela (e2e)', () => {
     return { id: row.id, reference: row.reference, token, total };
   }
 
-  const stripeIntent = (
+  const pendingCharge = (
     b: { reference: string; token: string },
     kind = 'FULL',
     key?: string,
   ) => {
     const r = http()
-      .post(`/api/public/bookings/${b.reference}/payments/stripe-intent`)
+      .post(`/api/public/bookings/${b.reference}/payments/culqi-charge`)
       .set('X-Booking-Token', b.token);
     if (key) r.set('Idempotency-Key', key);
-    return r.send({ kind });
+    return r.send({ kind, token: 'tok_pending', email: 'ana@example.com' });
   };
 
   const culqiCharge = (
@@ -143,11 +143,7 @@ describe('Pagos por pasarela (e2e)', () => {
     ...over,
   });
 
-  const webhook = (
-    provider: 'stripe' | 'culqi',
-    event: GatewayEvent,
-    tamper = false,
-  ) => {
+  const webhook = (provider: 'culqi', event: GatewayEvent, tamper = false) => {
     const signed = signFakeEvent(event);
     return http()
       .post(`/api/webhooks/${provider}`)
@@ -159,7 +155,7 @@ describe('Pagos por pasarela (e2e)', () => {
   };
 
   const succeeded = (
-    provider: 'stripe' | 'culqi',
+    provider: 'culqi',
     p: Body,
     eventId = `evt_${rand()}${rand()}`,
     over: Body = {},
@@ -167,7 +163,7 @@ describe('Pagos por pasarela (e2e)', () => {
     webhook(provider, {
       kind: 'payment',
       eventId,
-      type: 'payment_intent.succeeded',
+      type: 'charge.creation.succeeded',
       payment: gwPayment(p, over),
     } as GatewayEvent);
 
@@ -183,24 +179,24 @@ describe('Pagos por pasarela (e2e)', () => {
       ).length,
     );
 
-  // ------------------------------------------------------------- Stripe
-  describe('Stripe', () => {
-    it('creates an intent from the booking and confirms it only through the webhook', async () => {
+  // ------------------------------------------------------------ Webhooks
+  describe('webhooks', () => {
+    it('charges the amount of the booking and confirms an open charge only through the webhook', async () => {
       const b = await webBooking();
-      const res = await stripeIntent(b).expect(201);
+      const res = await pendingCharge(b).expect(201);
       const intent = res.body as Body;
-      expect(intent).toMatchObject({
-        amountCents: b.total,
-        currency: 'USD',
-        publishableKey: 'pk_fake_stripe',
-      });
-      expect(intent.clientSecret).toContain('_secret_');
+      expect(intent).toMatchObject({ status: 'PENDING' });
 
       const row = await payment(intent.paymentId);
-      expect(row).toMatchObject({ status: 'PENDING', provider: 'STRIPE' });
+      expect(row).toMatchObject({
+        status: 'PENDING',
+        provider: 'CULQI',
+        amountCents: b.total,
+        currency: 'USD',
+      });
       expect((await booking(b.id)).status).toBe('PENDING_PAYMENT');
 
-      await succeeded('stripe', row).expect(200);
+      await succeeded('culqi', row).expect(200);
       expect((await payment(row.id)).status).toBe('SUCCEEDED');
       expect(await booking(b.id)).toMatchObject({
         status: 'CONFIRMED',
@@ -214,27 +210,25 @@ describe('Pagos por pasarela (e2e)', () => {
       );
     });
 
-    it('rejects a PEN booking, a bad token and an unknown kind', async () => {
-      const pen = await webBooking({ currency: 'PEN' });
-      await stripeIntent(pen).expect(422);
+    it('rejects a bad booking token and an unknown kind', async () => {
       const b = await webBooking();
       await http()
-        .post(`/api/public/bookings/${b.reference}/payments/stripe-intent`)
+        .post(`/api/public/bookings/${b.reference}/payments/culqi-charge`)
         .set('X-Booking-Token', 'nope')
-        .send({ kind: 'FULL' })
+        .send({ kind: 'FULL', token: 'tok_ok', email: 'ana@example.com' })
         .expect(401);
-      await stripeIntent(b, 'WHATEVER').expect(422);
-      await stripeIntent(b, 'DEPOSIT').expect(422); // sin depósito
-      await stripeIntent(b, 'BALANCE').expect(422);
+      await pendingCharge(b, 'WHATEVER').expect(422);
+      await pendingCharge(b, 'DEPOSIT').expect(422); // sin depósito
+      await pendingCharge(b, 'BALANCE').expect(422);
     });
 
-    it('does not create a second intent when the request is repeated with the same key', async () => {
+    it('does not create a second charge when the request is repeated with the same key', async () => {
       const b = await webBooking();
       const key = `k-${rand()}${rand()}`;
-      const before = stripe.createCalls;
-      const a = await stripeIntent(b, 'FULL', key).expect(201);
-      const again = await stripeIntent(b, 'FULL', key).expect(201);
-      expect(stripe.createCalls).toBe(before + 1);
+      const before = culqi.createCalls;
+      const a = await pendingCharge(b, 'FULL', key).expect(201);
+      const again = await pendingCharge(b, 'FULL', key).expect(201);
+      expect(culqi.createCalls).toBe(before + 1);
       expect((again.body as Body).paymentId).toBe((a.body as Body).paymentId);
       expect(await prisma.payment.count({ where: { bookingId: b.id } })).toBe(
         1,
@@ -244,17 +238,17 @@ describe('Pagos por pasarela (e2e)', () => {
     it('a duplicate webhook does not duplicate the payment', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
       const id = `evt_dup_${rand()}${rand()}`;
-      await succeeded('stripe', p, id).expect(200);
-      await succeeded('stripe', p, id).expect(200);
+      await succeeded('culqi', p, id).expect(200);
+      await succeeded('culqi', p, id).expect(200);
       // Otro evento (id distinto) sobre el mismo cobro tampoco acredita dos veces.
-      await succeeded('stripe', p).expect(200);
+      await succeeded('culqi', p).expect(200);
       expect((await booking(b.id)).paidCents).toBe(b.total);
       expect(
         await prisma.webhookEvent.count({
-          where: { provider: 'STRIPE', eventId: id },
+          where: { provider: 'CULQI', eventId: id },
         }),
       ).toBe(1);
     });
@@ -262,21 +256,21 @@ describe('Pagos por pasarela (e2e)', () => {
     it('answers 400 to an invalid signature and stores nothing', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
       const eventId = `evt_bad_${rand()}${rand()}`;
       await webhook(
-        'stripe',
+        'culqi',
         {
           kind: 'payment',
           eventId,
-          type: 'payment_intent.succeeded',
+          type: 'charge.creation.succeeded',
           payment: gwPayment(p),
         } as GatewayEvent,
         true,
       ).expect(400);
       await http()
-        .post('/api/webhooks/stripe')
+        .post('/api/webhooks/culqi')
         .set('content-type', 'application/json')
         .send('{"kind":"ignored"}')
         .expect(400);
@@ -287,12 +281,12 @@ describe('Pagos por pasarela (e2e)', () => {
     it('records a failed payment and ignores a stale failure after success', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await webhook('stripe', {
+      await webhook('culqi', {
         kind: 'payment',
         eventId: `evt_${rand()}${rand()}`,
-        type: 'payment_intent.payment_failed',
+        type: 'charge.creation.failed',
         payment: gwPayment(p, {
           status: 'FAILED',
           failureCode: 'card_declined',
@@ -306,14 +300,14 @@ describe('Pagos por pasarela (e2e)', () => {
 
       // El cliente reintenta y esta vez paga: el éxito gana.
       const retry = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await succeeded('stripe', retry).expect(200);
+      await succeeded('culqi', retry).expect(200);
       // Un fallo tardío del primer intento no revierte nada.
-      await webhook('stripe', {
+      await webhook('culqi', {
         kind: 'payment',
         eventId: `evt_${rand()}${rand()}`,
-        type: 'payment_intent.payment_failed',
+        type: 'charge.creation.failed',
         payment: gwPayment(retry, { status: 'FAILED' }),
       } as GatewayEvent).expect(200);
       expect((await payment(retry.id)).status).toBe('SUCCEEDED');
@@ -323,9 +317,9 @@ describe('Pagos por pasarela (e2e)', () => {
     it('rejects an amount or currency that does not match what was requested', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await succeeded('stripe', p, undefined, { amountCents: 100 }).expect(200);
+      await succeeded('culqi', p, undefined, { amountCents: 100 }).expect(200);
       expect(await payment(p.id)).toMatchObject({
         status: 'FAILED',
         failureCode: 'amount_mismatch',
@@ -338,13 +332,13 @@ describe('Pagos por pasarela (e2e)', () => {
 
       const other = await webBooking();
       const p2 = await payment(
-        ((await stripeIntent(other).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(other).expect(201)).body as Body).paymentId,
       );
-      await succeeded('stripe', p2, undefined, { currency: 'PEN' }).expect(200);
+      await succeeded('culqi', p2, undefined, { currency: 'PEN' }).expect(200);
       expect((await payment(p2.id)).failureCode).toBe('amount_mismatch');
       expect((await booking(other.id)).paidCents).toBe(0);
       const event = await prisma.webhookEvent.findFirst({
-        where: { error: 'amount_mismatch', provider: 'STRIPE' },
+        where: { error: 'amount_mismatch', provider: 'CULQI' },
       });
       expect(event?.processedAt).not.toBeNull();
     });
@@ -352,9 +346,9 @@ describe('Pagos por pasarela (e2e)', () => {
     it('rejects events for unknown payments so the gateway retries them, leaving them unprocessed', async () => {
       const eventId = `evt_unk_${rand()}${rand()}`;
       await succeeded(
-        'stripe',
+        'culqi',
         {
-          providerRef: `pi_${rand()}`,
+          providerRef: `chr_${rand()}`,
           amountCents: 5,
           currency: 'USD',
           id: '',
@@ -363,7 +357,7 @@ describe('Pagos por pasarela (e2e)', () => {
         { metadata: {} },
       ).expect(409);
       const row = await prisma.webhookEvent.findFirstOrThrow({
-        where: { provider: 'STRIPE', eventId },
+        where: { provider: 'CULQI', eventId },
       });
       expect(row.processedAt).toBeNull();
       expect(row.error).toBe('Unknown payment');
@@ -379,28 +373,30 @@ describe('Pagos por pasarela (e2e)', () => {
       });
       expect(row.depositCents).toBeGreaterThan(0);
 
-      await stripeIntent(b, 'BALANCE').expect(409); // el depósito aún no se pagó
+      await pendingCharge(b, 'BALANCE').expect(409); // el depósito aún no se pagó
       const dep = await payment(
-        ((await stripeIntent(b, 'DEPOSIT').expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b, 'DEPOSIT').expect(201)).body as Body)
+          .paymentId,
       );
       expect(dep).toMatchObject({
         kind: 'DEPOSIT',
         amountCents: row.depositCents,
       });
-      await succeeded('stripe', dep).expect(200);
+      await succeeded('culqi', dep).expect(200);
       expect(await booking(b.id)).toMatchObject({
         status: 'CONFIRMED',
         paidCents: row.depositCents,
       });
-      await stripeIntent(b, 'DEPOSIT').expect(409); // ya no queda depósito
+      await pendingCharge(b, 'DEPOSIT').expect(409); // ya no queda depósito
 
       const bal = await payment(
-        ((await stripeIntent(b, 'BALANCE').expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b, 'BALANCE').expect(201)).body as Body)
+          .paymentId,
       );
       expect(bal.amountCents).toBe(b.total - row.depositCents!);
-      await succeeded('stripe', bal).expect(200);
+      await succeeded('culqi', bal).expect(200);
       expect((await booking(b.id)).paidCents).toBe(b.total);
-      await stripeIntent(b, 'FULL').expect(409); // nada pendiente
+      await pendingCharge(b, 'FULL').expect(409); // nada pendiente
     });
   });
 
@@ -431,6 +427,16 @@ describe('Pagos por pasarela (e2e)', () => {
       const declined = await culqiCharge(b, 'tok_declined').expect(201);
       expect(declined.body).toMatchObject({ status: 'FAILED' });
       expect((declined.body as Body).failureMessage).toBeTruthy();
+      // Un 4xx de Culqi que no es del banco: 502, y el intento queda cerrado.
+      await culqiCharge(b, 'tok_rejected').expect(502);
+      expect(
+        await prisma.payment.count({
+          where: {
+            bookingId: b.id,
+            status: { in: ['PENDING', 'REQUIRES_ACTION'] },
+          },
+        }),
+      ).toBe(0);
       expect((await booking(b.id)).status).toBe('PENDING_PAYMENT');
       const ok = await culqiCharge(b, 'tok_ok').expect(201);
       expect(ok.body).toMatchObject({ status: 'SUCCEEDED' });
@@ -500,9 +506,9 @@ describe('Pagos por pasarela (e2e)', () => {
     it('a link is used once and a second payment is refused', async () => {
       const b = await webBooking({ paymentKind: 'DEPOSIT' });
       await succeeded(
-        'stripe',
+        'culqi',
         await payment(
-          ((await stripeIntent(b, 'DEPOSIT').expect(201)).body as Body)
+          ((await pendingCharge(b, 'DEPOSIT').expect(201)).body as Body)
             .paymentId,
         ),
       ).expect(200);
@@ -515,15 +521,17 @@ describe('Pagos por pasarela (e2e)', () => {
       const link = created.body as Body;
 
       const intent = await http()
-        .post(`/api/public/payment-links/${link.token}/stripe-intent`)
+        .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+        .send({ token: 'tok_pending', email: 'a@example.com' })
         .expect(201);
       // Mientras hay un cobro en curso no se abre otro.
       await http()
-        .post(`/api/public/payment-links/${link.token}/stripe-intent`)
+        .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+        .send({ token: 'tok_pending', email: 'a@example.com' })
         .expect(409);
       const p = await payment((intent.body as Body).paymentId);
       expect(p).toMatchObject({ kind: 'BALANCE', paymentLinkId: link.id });
-      await succeeded('stripe', p).expect(200);
+      await succeeded('culqi', p).expect(200);
 
       const used = await prisma.paymentLink.findUniqueOrThrow({
         where: { id: link.id },
@@ -531,16 +539,54 @@ describe('Pagos por pasarela (e2e)', () => {
       expect(used.usedAt).not.toBeNull();
       expect((await booking(b.id)).paidCents).toBe(b.total);
       await http()
-        .post(`/api/public/payment-links/${link.token}/stripe-intent`)
+        .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+        .send({ token: 'tok_pending', email: 'a@example.com' })
         .expect(410);
       await http()
         .post(`/api/public/payment-links/${link.token}/culqi-charge`)
         .send({ token: 'tok_ok', email: 'a@example.com' })
         .expect(410);
       await http()
-        .post(`/api/public/payment-links/nope-${rand()}/stripe-intent`)
+        .post(`/api/public/payment-links/nope-${rand()}/culqi-charge`)
+        .send({ token: 'tok_pending', email: 'a@example.com' })
         .expect(404);
     });
+
+    it.each([
+      ['a declined card', 'tok_declined', 201],
+      ['a request Culqi refuses', 'tok_rejected', 502],
+    ])(
+      'after %s the same link can be paid again',
+      async (_case, token, status) => {
+        const b = await webBooking({ currency: 'PEN' });
+        const created = await http()
+          .post(`/api/bookings/${b.id}/payment-links`)
+          .set(admin.auth)
+          .send({ kind: 'FULL' })
+          .expect(201);
+        const link = created.body as Body;
+        const failed = await http()
+          .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+          .send({ token, email: 'a@example.com' })
+          .expect(status);
+        if (status === 201) {
+          expect(failed.body).toMatchObject({
+            status: 'FAILED',
+            failureMessage: 'Card declined',
+          });
+        }
+        const attempts = await prisma.payment.findMany({
+          where: { paymentLinkId: link.id },
+        });
+        expect(attempts.map((p) => p.status)).toEqual(['FAILED']);
+        const ok = await http()
+          .post(`/api/public/payment-links/${link.token}/culqi-charge`)
+          .send({ token: 'tok_ok', email: 'a@example.com' })
+          .expect(201);
+        expect(ok.body).toMatchObject({ status: 'SUCCEEDED' });
+        expect((await booking(b.id)).status).toBe('CONFIRMED');
+      },
+    );
 
     it('charges a link through Culqi', async () => {
       const b = await webBooking({ currency: 'PEN' });
@@ -568,7 +614,7 @@ describe('Pagos por pasarela (e2e)', () => {
     async function expireWithPayment(over: { capacity?: number } = {}) {
       const dep = await fx.departure({ capacity: over.capacity ?? 4 });
       const b = await webBooking({}, dep.id);
-      const intent = (await stripeIntent(b).expect(201)).body as Body;
+      const intent = (await pendingCharge(b).expect(201)).body as Body;
       // El cobro lleva más de la gracia en curso y la ventana de pago venció.
       await prisma.$executeRaw`UPDATE "Payment" SET "updatedAt" = now() - interval '2 hours' WHERE "id" = ${intent.paymentId}`;
       await prisma.$executeRaw`UPDATE "Hold" SET "expiresAt" = now() - interval '1 minute' WHERE "id" = (SELECT "holdId" FROM "Booking" WHERE "id" = ${b.id})`;
@@ -582,7 +628,7 @@ describe('Pagos por pasarela (e2e)', () => {
 
     it('reactivates the booking when there is still room', async () => {
       const { b, payment: p } = await expireWithPayment();
-      await succeeded('stripe', p).expect(200);
+      await succeeded('culqi', p).expect(200);
       expect(await booking(b.id)).toMatchObject({
         status: 'CONFIRMED',
         cancelledAt: null,
@@ -606,7 +652,7 @@ describe('Pagos por pasarela (e2e)', () => {
       // Otra persona toma los dos cupos liberados.
       await webBooking({}, dep.id);
 
-      await succeeded('stripe', p).expect(200);
+      await succeeded('culqi', p).expect(200);
       expect((await booking(b.id)).status).toBe('CANCELLED');
       const refund = await prisma.refund.findFirstOrThrow({
         where: { paymentId: p.id },
@@ -616,7 +662,7 @@ describe('Pagos por pasarela (e2e)', () => {
         status: 'SUCCEEDED',
       });
       expect(refund.reason).toContain('late_payment');
-      expect(stripe.refunds.map((r) => r.providerRef)).toContain(
+      expect(culqi.refunds.map((r) => r.providerRef)).toContain(
         refund.providerRef,
       );
       expect(await payment(p.id)).toMatchObject({
@@ -633,7 +679,7 @@ describe('Pagos por pasarela (e2e)', () => {
     it('never reactivates a booking that a person cancelled', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
       await prisma.booking.update({
         where: { id: b.id },
@@ -643,7 +689,7 @@ describe('Pagos por pasarela (e2e)', () => {
           cancelledAt: new Date(),
         },
       });
-      await succeeded('stripe', p).expect(200);
+      await succeeded('culqi', p).expect(200);
       expect((await booking(b.id)).status).toBe('CANCELLED');
       expect(
         (await prisma.refund.findFirstOrThrow({ where: { paymentId: p.id } }))
@@ -654,7 +700,7 @@ describe('Pagos por pasarela (e2e)', () => {
     it('queues the refund and keeps it pending when the gateway is down', async () => {
       const b = await webBooking();
       const p = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
       await prisma.booking.update({
         where: { id: b.id },
@@ -664,11 +710,11 @@ describe('Pagos por pasarela (e2e)', () => {
           cancelledAt: new Date(),
         },
       });
-      stripe.failRefunds = true;
+      culqi.failRefunds = true;
       try {
-        await succeeded('stripe', p).expect(200);
+        await succeeded('culqi', p).expect(200);
       } finally {
-        stripe.failRefunds = false;
+        culqi.failRefunds = false;
       }
       const refund = await prisma.refund.findFirstOrThrow({
         where: { paymentId: p.id },
@@ -682,13 +728,13 @@ describe('Pagos por pasarela (e2e)', () => {
     it('refunds the excess when two payments cover the same booking', async () => {
       const b = await webBooking();
       const p1 = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
       const p2 = await payment(
-        ((await stripeIntent(b).expect(201)).body as Body).paymentId,
+        ((await pendingCharge(b).expect(201)).body as Body).paymentId,
       );
-      await succeeded('stripe', p1).expect(200);
-      await succeeded('stripe', p2).expect(200);
+      await succeeded('culqi', p1).expect(200);
+      await succeeded('culqi', p2).expect(200);
       expect(await booking(b.id)).toMatchObject({
         status: 'CONFIRMED',
         paidCents: b.total * 2,

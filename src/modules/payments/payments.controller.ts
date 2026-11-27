@@ -3,11 +3,7 @@ import { Throttle } from '@nestjs/throttler';
 import { rateLimit } from '../../common/throttle';
 import { Public } from '../auth/decorators';
 import { BookingAccessService } from '../bookings/booking-access.service';
-import {
-  CreatePaymentDto,
-  CulqiChargeDto,
-  LinkCulqiChargeDto,
-} from './dto/payments.dto';
+import { CulqiChargeDto, LinkCulqiChargeDto } from './dto/payments.dto';
 import { PaymentsService } from './payments.service';
 
 /**
@@ -23,18 +19,6 @@ export class PublicPaymentsController {
     private readonly access: BookingAccessService,
   ) {}
 
-  @Post('bookings/:reference/payments/stripe-intent')
-  @Throttle(rateLimit(10, 60_000))
-  async bookingStripeIntent(
-    @Param('reference') reference: string,
-    @Headers('x-booking-token') token: string | undefined,
-    @Headers('idempotency-key') key: string | undefined,
-    @Body() dto: CreatePaymentDto,
-  ) {
-    const bookingId = await this.access.authenticate(reference, token);
-    return this.payments.bookingStripeIntent(bookingId, dto.kind, key);
-  }
-
   @Post('bookings/:reference/payments/culqi-charge')
   @Throttle(rateLimit(10, 60_000))
   async bookingCulqiCharge(
@@ -45,15 +29,6 @@ export class PublicPaymentsController {
   ) {
     const bookingId = await this.access.authenticate(reference, token);
     return this.payments.bookingCulqiCharge(bookingId, dto.kind, dto, key);
-  }
-
-  @Post('payment-links/:token/stripe-intent')
-  @Throttle(rateLimit(10, 60_000))
-  linkStripeIntent(
-    @Param('token') token: string,
-    @Headers('idempotency-key') key: string | undefined,
-  ) {
-    return this.payments.linkStripeIntent(token, key);
   }
 
   @Post('payment-links/:token/culqi-charge')
