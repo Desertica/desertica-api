@@ -50,11 +50,12 @@ export class GoogleAuthLibraryVerifier implements GoogleIdTokenVerifier {
 
 /**
  * Solo desarrollo y pruebas (`AUTH_ALLOW_FAKE_GOOGLE=true`, prohibido en
- * producción por el esquema de entorno). Formato: `fake:<email>[:<nombre>]`.
+ * producción por el esquema de entorno). Formato: `fake:<email>[:<nombre>[:<hd>]]`;
+ * sin `hd` se toma el dominio del correo, y `hd` vacío simula una cuenta personal de Google.
  */
 export class FakeGoogleVerifier implements GoogleIdTokenVerifier {
   verify(idToken: string): Promise<GoogleIdentity> {
-    const [prefix, email, name] = idToken.split(':');
+    const [prefix, email, name, hd] = idToken.split(':');
     if (prefix !== 'fake' || !email) {
       return Promise.reject(new UnauthorizedException('Invalid Google token'));
     }
@@ -62,8 +63,8 @@ export class FakeGoogleVerifier implements GoogleIdTokenVerifier {
       sub: `fake-${email.toLowerCase()}`,
       email,
       emailVerified: true,
-      name: name ?? email,
-      hostedDomain: email.split('@')[1],
+      name: name || email,
+      hostedDomain: hd === undefined ? email.split('@')[1] : hd || undefined,
     });
   }
 }

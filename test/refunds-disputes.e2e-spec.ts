@@ -30,6 +30,7 @@ describe('Reembolsos y disputas (e2e)', () => {
   let prisma: PrismaService;
   let admin: TestSession;
   let operator: TestSession;
+  let finance: TestSession;
   let stripe: FakeGateway;
   let fx: CatalogFixture;
   const storage = new MemoryDocumentStorage();
@@ -55,6 +56,7 @@ describe('Reembolsos y disputas (e2e)', () => {
     stripe = app.get(GatewayRegistry).get('STRIPE') as FakeGateway;
     admin = await loginAs(app, 'admin');
     operator = await loginAs(app, 'operator');
+    finance = await loginAs(app, 'finance');
     fx = await createCatalog(app);
   });
   afterAll(async () => {
@@ -178,17 +180,17 @@ describe('Reembolsos y disputas (e2e)', () => {
     it('limits operators by what was already refunded on the booking and lets refund-any through', async () => {
       const b = await makeBooking(app, fx, { currency: 'PEN', adults: 4 }); // 144000
       const p = await recordPaid(app, b);
-      await refund(operator, p.id, { amountCents: 20001, reason: 'x' }).expect(
+      await refund(finance, p.id, { amountCents: 20001, reason: 'x' }).expect(
         403,
       );
-      await refund(operator, p.id, { amountCents: 12000, reason: 'x' }).expect(
+      await refund(finance, p.id, { amountCents: 12000, reason: 'x' }).expect(
         201,
       );
       // 12000 ya devueltos + 9000 > 20000: no se puede partir el reembolso para evitar el tope.
-      await refund(operator, p.id, { amountCents: 9000, reason: 'x' }).expect(
+      await refund(finance, p.id, { amountCents: 9000, reason: 'x' }).expect(
         403,
       );
-      await refund(operator, p.id, { amountCents: 8000, reason: 'x' }).expect(
+      await refund(finance, p.id, { amountCents: 8000, reason: 'x' }).expect(
         201,
       );
       const big = await refund(admin, p.id, {
@@ -291,7 +293,7 @@ describe('Reembolsos y disputas (e2e)', () => {
 
       const done = await http()
         .post(`/api/refunds/${pending.id}/complete`)
-        .set(operator.auth)
+        .set(finance.auth)
         .expect(200);
       expect(done.body).toMatchObject({
         status: 'SUCCEEDED',
@@ -304,11 +306,11 @@ describe('Reembolsos y disputas (e2e)', () => {
       expect((await booking(b.id)).refundedCents).toBe(20000);
       await http()
         .post(`/api/refunds/${pending.id}/complete`)
-        .set(operator.auth)
+        .set(finance.auth)
         .expect(409);
       await http()
         .post(`/api/refunds/00000000-0000-4000-8000-000000000000/complete`)
-        .set(operator.auth)
+        .set(finance.auth)
         .expect(404);
     });
 
@@ -444,6 +446,25 @@ describe('Reembolsos y disputas (e2e)', () => {
       });
       expect((await booking(b.id)).refundedCents).toBe(7000);
       expect(alertsFor(b.id, 'refund_external')).toBe(1);
+    });
+
+    it('never applies an external refund larger than what is left to refund', async () => {
+      const b = await makeBooking(app, fx);
+      const p = await recordPaid(app, b);
+      const left = p.amountCents - 7000;
+      await postWebhook(
+        app,
+        'stripe',
+        refundEvent(p, 'SUCCEEDED', `re_ext_${rand()}`, 7000),
+      ).expect(200);
+      await postWebhook(
+        app,
+        'stripe',
+        refundEvent(p, 'SUCCEEDED', `re_ext_${rand()}`, left + 1),
+      ).expect(200);
+      expect(await prisma.refund.count({ where: { paymentId: p.id } })).toBe(1);
+      expect((await payment(p.id)).refundedCents).toBe(7000);
+      expect(alertsFor(b.id, 'refund_external_exceeds_payment')).toBe(1);
     });
 
     it('counts an external refund once when two events for it arrive at the same time', async () => {

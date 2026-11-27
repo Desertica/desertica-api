@@ -91,6 +91,10 @@ export const envSchema = Joi.object({
     }),
   JWT_ACCESS_TTL_SECONDS: Joi.number().integer().min(60).default(900),
   REFRESH_TTL_DAYS: Joi.number().integer().min(1).default(30),
+  /** Duración máxima de una sesión desde el login con Google; renovar el token no la extiende. */
+  SESSION_MAX_HOURS: Joi.number().integer().min(1).max(720).default(12),
+  /** Antigüedad máxima del login para las acciones delicadas (si no, `401 reauth_required`). */
+  REAUTH_MAX_AGE_MINUTES: Joi.number().integer().min(1).max(720).default(10),
   /** Segundos en que reusar un refresh token recién rotado (dos pestañas a la vez) no se toma por robo. */
   REFRESH_REUSE_GRACE_SECONDS: Joi.number().integer().min(0).default(20),
   /** Atributo `Secure` de la cookie del refresh token. Solo se puede apagar fuera de producción (HTTP local). */
@@ -102,6 +106,22 @@ export const envSchema = Joi.object({
     .default(false)
     .when('NODE_ENV', { is: 'production', then: Joi.valid(false) }),
 
+  /**
+   * Clave AES-256-GCM de los datos sensibles cifrados en la base (notas médicas): 32 bytes en
+   * base64 (`openssl rand -base64 32`). Obligatoria en producción; perderla deja esos datos ilegibles.
+   */
+  DATA_ENCRYPTION_KEY: Joi.string()
+    .base64()
+    .length(44)
+    .when('NODE_ENV', {
+      is: 'production',
+      then: Joi.required(),
+      otherwise: Joi.string().default(
+        'ZGV2LW9ubHktZGF0YS1rZXktY2hhbmdlLW1lLTAxMjM=',
+      ),
+    }),
+  /** Secreto de los enlaces firmados de los PDF. Opcional: sin él se deriva de `JWT_ACCESS_SECRET`. */
+  LINK_SIGNING_SECRET: Joi.string().min(32).allow('').default(''),
   /** Cloudflare Turnstile. Sin clave no se verifica el captcha (desarrollo). */
   TURNSTILE_SECRET_KEY: Joi.string().when('NODE_ENV', {
     is: 'production',
@@ -239,9 +259,13 @@ export interface EnvVars {
   JWT_ACCESS_SECRET: string;
   JWT_ACCESS_TTL_SECONDS: number;
   REFRESH_TTL_DAYS: number;
+  SESSION_MAX_HOURS: number;
+  REAUTH_MAX_AGE_MINUTES: number;
   REFRESH_REUSE_GRACE_SECONDS: number;
   REFRESH_COOKIE_SECURE: boolean;
   AUTH_ALLOW_FAKE_GOOGLE: boolean;
+  DATA_ENCRYPTION_KEY: string;
+  LINK_SIGNING_SECRET: string;
   TURNSTILE_SECRET_KEY: string;
   STAFF_NOTIFY_EMAIL: string;
   MAIL_DRIVER: 'log' | 'smtp';

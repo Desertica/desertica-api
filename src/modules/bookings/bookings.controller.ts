@@ -14,6 +14,7 @@ import type { Request } from 'express';
 import { UuidPipe } from '../../common/pipes/id-pipes';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser, RequirePermission } from '../auth/decorators';
+import { BookingAccessService } from './booking-access.service';
 import { BookingCreationService } from './booking-creation.service';
 import { BookingLifecycleService } from './booking-lifecycle.service';
 import { BookingPaymentsService } from './booking-payments.service';
@@ -38,6 +39,7 @@ export class BookingsController {
     private readonly creation: BookingCreationService,
     private readonly lifecycle: BookingLifecycleService,
     private readonly payments: BookingPaymentsService,
+    private readonly access: BookingAccessService,
   ) {}
 
   @Get()
@@ -105,6 +107,17 @@ export class BookingsController {
     @Req() req: Request,
   ) {
     return this.lifecycle.cancel(id, dto, user, req.ip);
+  }
+
+  @Post(':id/access-links/revoke')
+  @HttpCode(200)
+  @RequirePermission('bookings:write')
+  revokeAccessLinks(
+    @Param('id', UuidPipe) id: string,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.access.revokeByStaff(id, user.id, req.ip);
   }
 
   @Post(':id/reschedule')

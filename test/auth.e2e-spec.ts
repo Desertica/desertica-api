@@ -378,6 +378,219 @@ describe('Auth y permisos (e2e)', () => {
     });
   });
 
+  describe('session limits, recent login and audit of failures', () => {
+    const lastAudit = (action: string, entityId: string) =>
+      prisma.auditLog.findFirst({
+        where: { action, entityId },
+        orderBy: { createdAt: 'desc' },
+      });
+
+    it('rejects a personal Google account that uses a company address (no hd) and audits it', async () => {
+      const email = uniqueEmail('personal');
+      const role = await prisma.role.findUniqueOrThrow({
+        where: { key: 'operator' },
+      });
+      const user = await prisma.user.create({
+        data: { email, name: 'Personal', roleId: role.id },
+      });
+      await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${email}:Personal:` })
+        .expect(403);
+      await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${email}:Personal:otra-empresa.com` })
+        .expect(403);
+      const log = await lastAudit('auth.login_failed', user.id);
+      expect(log?.after).toMatchObject({
+        reason: 'not_workspace_account',
+        email,
+      });
+      // El usuario no quedó ligado a esa cuenta.
+      expect(
+        (await prisma.user.findUniqueOrThrow({ where: { id: user.id } }))
+          .googleSub,
+      ).toBeNull();
+    });
+
+    it('audits failed logins without storing outside email addresses', async () => {
+      const ghost = uniqueEmail('ghost');
+      await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${ghost}` })
+        .expect(403);
+      const failed = await prisma.auditLog.findFirst({
+        where: {
+          action: 'auth.login_failed',
+          after: { path: ['email'], equals: ghost },
+        },
+      });
+      expect(failed?.after).toMatchObject({ reason: 'not_invited' });
+
+      const before = await prisma.auditLog.count({
+        where: { action: 'auth.login_failed' },
+      });
+      await http()
+        .post('/api/auth/google')
+        .send({ idToken: 'fake:someone@gmail.com' })
+        .expect(403);
+      await http()
+        .post('/api/auth/google')
+        .send({ idToken: 'garbage' })
+        .expect(401);
+      const rows = await prisma.auditLog.findMany({
+        where: { action: 'auth.login_failed' },
+        orderBy: { createdAt: 'desc' },
+        take: 2,
+      });
+      expect(
+        await prisma.auditLog.count({ where: { action: 'auth.login_failed' } }),
+      ).toBe(before + 2);
+      expect(rows.map((r) => r.after)).toEqual([
+        { reason: 'invalid_google_token' },
+        { reason: 'wrong_domain' },
+      ]);
+    });
+
+    it('audits logout once', async () => {
+      const session = await loginAs(app, 'operator');
+      await http()
+        .post('/api/auth/logout')
+        .set(refreshCookie(session.refreshToken))
+        .expect(204);
+      await http()
+        .post('/api/auth/logout')
+        .set(refreshCookie(session.refreshToken))
+        .expect(204);
+      expect(
+        await prisma.auditLog.count({
+          where: { action: 'auth.logout', entityId: session.user.id },
+        }),
+      ).toBe(1);
+    });
+
+    it('ends the session 12 hours after the Google login no matter how often it is refreshed', async () => {
+      const session = await loginAs(app, 'operator');
+      const login = await prisma.refreshToken.findFirstOrThrow({
+        where: { userId: session.user.id },
+      });
+      const twelveHours = 12 * 3_600_000;
+      expect(
+        login.expiresAt.getTime() - login.authenticatedAt.getTime(),
+      ).toBeLessThanOrEqual(twelveHours);
+
+      const res = await http()
+        .post('/api/auth/refresh')
+        .set(refreshCookie(session.refreshToken))
+        .expect(200);
+      expect((res.body as { sessionExpiresAt: string }).sessionExpiresAt).toBe(
+        login.expiresAt.toISOString(),
+      );
+      const rotated = await prisma.refreshToken.findFirstOrThrow({
+        where: { userId: session.user.id, revokedAt: null },
+      });
+      // Rotar no alarga la sesión ni cambia el login de origen.
+      expect(rotated.expiresAt).toEqual(login.expiresAt);
+      expect(rotated.authenticatedAt).toEqual(login.authenticatedAt);
+
+      // Pasadas las 12 h el refresh ya no sirve aunque el token no se haya usado.
+      await prisma.refreshToken.update({
+        where: { id: rotated.id },
+        data: {
+          authenticatedAt: new Date(Date.now() - twelveHours - 60_000),
+          expiresAt: new Date(Date.now() - 60_000),
+        },
+      });
+      await http()
+        .post('/api/auth/refresh')
+        .set(refreshCookie(refreshTokenFrom(res)))
+        .expect(401);
+    });
+
+    it('asks for a recent Google login before sensitive actions; a refresh does not count', async () => {
+      const admin = await loginAs(app, 'admin');
+      const role = await prisma.role.findUniqueOrThrow({
+        where: { key: 'readonly' },
+      });
+      // Login de hace 20 minutos: se renueva el token y sigue valiendo para lo normal.
+      await prisma.refreshToken.updateMany({
+        where: { userId: admin.user.id },
+        data: { authenticatedAt: new Date(Date.now() - 20 * 60_000) },
+      });
+      const res = await http()
+        .post('/api/auth/refresh')
+        .set(refreshCookie(admin.refreshToken))
+        .expect(200);
+      const stale = {
+        Authorization: `Bearer ${(res.body as { accessToken: string }).accessToken}`,
+      };
+      await http().get('/api/users').set(stale).expect(200);
+      const denied = await http()
+        .post('/api/users')
+        .set(stale)
+        .send({ email: uniqueEmail('late'), name: 'Tarde', roleId: role.id })
+        .expect(403);
+      expect(denied.body).toMatchObject({
+        message: 'Recent login required',
+        details: { reason: 'reauth_required', maxAgeMinutes: 10 },
+      });
+      for (const [method, url] of [
+        ['put', '/api/settings'],
+        ['put', '/api/companies/current'],
+        ['post', '/api/legal-documents'],
+        ['post', `/api/customers/${admin.user.id}/erase`],
+        ['post', `/api/payments/${admin.user.id}/refunds`],
+      ] as const) {
+        const r = await http()[method](url).set(stale).send({});
+        expect([
+          r.status,
+          (r.body as { details?: { reason?: string } }).details?.reason,
+        ]).toEqual([403, 'reauth_required']);
+      }
+
+      // Volver a entrar con Google lo destraba.
+      const fresh = await http()
+        .post('/api/auth/google')
+        .send({ idToken: `fake:${admin.user.email}` })
+        .expect(200);
+      await http()
+        .post('/api/users')
+        .set(
+          'Authorization',
+          `Bearer ${(fresh.body as { accessToken: string }).accessToken}`,
+        )
+        .send({ email: uniqueEmail('fresh'), name: 'Nuevo', roleId: role.id })
+        .expect(201);
+    });
+
+    it('lists the four fixed roles', async () => {
+      const admin = await loginAs(app, 'admin');
+      const res = await http().get('/api/roles').set(admin.auth).expect(200);
+      const roles = (res.body as { data: { key: string; name: string }[] })
+        .data;
+      // Otras pruebas crean roles propios en la misma base: se buscan los 4 fijos.
+      expect(roles.map((r) => [r.key, r.name])).toEqual(
+        expect.arrayContaining([
+          ['admin', 'Administrador'],
+          ['operator', 'Operaciones'],
+          ['finance', 'Finanzas'],
+          ['readonly', 'Solo lectura'],
+        ]),
+      );
+    });
+
+    it('lets a read-only user open the dashboard data it can see, and blocks reports otherwise', async () => {
+      const readonly = await loginAs(app, 'readonly');
+      const operator = await loginAs(app, 'operator');
+      await http().get('/api/customers').set(readonly.auth).expect(403);
+      await http()
+        .get('/api/reports/sales')
+        .query({ from: '2026-01-01', to: '2026-01-02', groupBy: 'day' })
+        .set(operator.auth)
+        .expect(403);
+    });
+  });
+
   it('uses the configured domain', () => {
     expect(DOMAIN).toBeTruthy();
   });
