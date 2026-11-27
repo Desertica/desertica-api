@@ -126,7 +126,8 @@ export class CulqiGateway implements PaymentGateway {
       throw new InvalidWebhookSignatureError('Body is not JSON');
     }
     const eventId = typeof posted.id === 'string' ? posted.id : '';
-    if (!/^evt_(test|live)_[A-Za-z0-9]+$/.test(eventId)) {
+    // Culqi usa ids de 25 caracteres (`evt_test_0CjjdWhFpEAZlxlz`); otro largo ni se consulta.
+    if (!/^evt_(test|live)_[A-Za-z0-9]{16}$/.test(eventId)) {
       throw new InvalidWebhookSignatureError('Missing Culqi event id');
     }
 
@@ -135,7 +136,12 @@ export class CulqiGateway implements PaymentGateway {
     try {
       event = await this.call('GET', `/events/${eventId}`);
     } catch (error) {
-      if (error instanceof GatewayError && error.code === 'resource_error') {
+      // Evento inexistente: Culqi responde 400 `parameter_error` (o 404 `resource_error`).
+      // Un 401 (`authentication_error`) es nuestra clave mal puesta y sigue como error.
+      if (
+        error instanceof GatewayError &&
+        (error.code === 'parameter_error' || error.code === 'resource_error')
+      ) {
         throw new InvalidWebhookSignatureError('Unknown Culqi event');
       }
       throw error;
