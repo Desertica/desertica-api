@@ -164,6 +164,8 @@ export const envSchema = Joi.object({
   CMS_URL: Joi.string().uri().default('http://localhost:1337'),
   CMS_API_TOKEN: Joi.string().allow('').default(''),
   CMS_CACHE_TTL_SECONDS: Joi.number().integer().min(0).default(300),
+  /** Secreto de la cabecera `X-Webhook-Secret` del webhook de Strapi (vacío = webhook apagado). */
+  CMS_WEBHOOK_SECRET: Joi.string().min(32).allow('').default(''),
 
   // Pagos (Ola 2). `fake` solo existe para desarrollo y pruebas: nunca mueve dinero.
   PAYMENT_GATEWAY_MODE: Joi.string()
@@ -256,6 +258,7 @@ export interface EnvVars {
   CMS_URL: string;
   CMS_API_TOKEN: string;
   CMS_CACHE_TTL_SECONDS: number;
+  CMS_WEBHOOK_SECRET: string;
   PAYMENT_GATEWAY_MODE: 'live' | 'fake';
   STRIPE_SECRET_KEY: string;
   STRIPE_PUBLISHABLE_KEY: string;

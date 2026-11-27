@@ -711,6 +711,55 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /webhooks/cms:
+    post:
+      operationId: receiveCmsWebhook
+      tags: [Webhooks]
+      summary: Aviso de Strapi al publicar o despublicar un tour
+      description: |
+        Webhook de Strapi (ver `docs/WEBHOOKS.md` del CMS). Exige la cabecera `X-Webhook-Secret` igual a
+        `CMS_WEBHOOK_SECRET` (401 si falta o no coincide; 503 si el API no tiene secreto). Para `model: tour`
+        sincroniza solo ese tour con la misma lógica que `syncTourRefs`: lo crea inactivo si es nuevo, refresca
+        su título y lo desactiva si ya no está publicado en ningún idioma. Idempotente: repetir el aviso deja
+        el mismo estado. Otros modelos o eventos (y el `trigger-test` del admin) responden 200 con
+        `ignored: true`. El botón "Sincronizar con el CMS" sigue como respaldo (Strapi no reintenta).
+      security: []
+      parameters:
+        - name: X-Webhook-Secret
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+              properties:
+                event: { type: string, example: entry.publish }
+                model: { type: string, example: tour }
+                entry:
+                  type: object
+                  additionalProperties: true
+                  properties:
+                    slug: { type: string }
+      responses:
+        '200':
+          description: Recibido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ignored: { type: boolean }
+                  created: { type: integer }
+                  updated: { type: integer }
+                  deactivated: { type: integer }
+        '401': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+
   # -------------------------------------------------------------------- Auth
   /auth/google:
     post:

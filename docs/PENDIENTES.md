@@ -114,6 +114,16 @@ Hecho en la Ola 1: fundaciones, auth y permisos, catálogo, reservas, cumplimien
 - [ ] **Logs**: las rutas con token (`/public/waivers|payment-links|holds/<token>`) y los parámetros `token`/`key`/`secret` salen redactados; los errores de Prisma se registran sin su mensaje y los de SMTP sin correos. `LogMailer` imprime enlaces con tokens: por eso producción exige `MAIL_DRIVER=smtp`. Falta decidir la retención de logs.
 - [x] **Imagen Docker**: `docker build` verificado; la imagen se poda a dependencias de producción (`prisma`, `dotenv` y `tsx` son dependencias para `migrate deploy`). El seed (`prisma/seed.ts`) importa de `src/`, que la imagen no trae: se corre desde el repo.
 
+## Eventos en vivo en el backoffice (propuesto, no hecho)
+
+Hoy las listas de reservas, pagos, disputas, reclamos y mensajes solo cambian al pulsar "Recargar". El webhook del CMS ya sincroniza los tours solo (`POST /webhooks/cms`). Diseño para lo demás, en su propio PR (API + backoffice), cuando cierre el PR de seguridad del backoffice:
+
+- **API**: `GET /api/events` (`text/event-stream`), autenticado con el mismo JWT del personal. Eventos sin datos personales, solo `{ type, id }`: `booking.created|updated` (permiso `bookings:read`), `payment.updated` y `dispute.updated` (`payments:read`), `complaint.created` (permiso de reclamos). Cada conexión recibe solo los tipos que sus permisos permiten; el navegador vuelve a pedir la fila con los endpoints de siempre, que ya aplican permisos. Se emite después del commit en reservas, `PaymentEventsService` y reclamos.
+- **Varias instancias**: Redis pub/sub (ya hay `REDIS_URL`); sin Redis, solo una instancia (como el resto de almacenes en memoria).
+- **Navegador**: `EventSource` no manda `Authorization`, y el token en la URL quedaría en logs: usar `fetch` con lectura en streaming y reconectar con el token nuevo tras el refresh o al expirar la sesión (`SESSION_MAX_HOURS`). Al recibir un evento, `reload()` del recurso de esa página.
+- **Infra**: latido cada 25 s (Cloudflare corta a los 100 s sin datos); comprobar que Traefik no acumula la respuesta.
+- **Atajo si se quiere ya**: recargar la lista cada 60 s mientras la pestaña está visible (`resource.reload()` existe en cada página; unas diez líneas por página, sin tocar el API).
+
 ## Documentación
 
 - [ ] ADRs de las decisiones del plan.
