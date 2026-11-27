@@ -142,6 +142,9 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `NODE_ENV` | `production` | **También en staging**: ver el recuadro de abajo. |
 | `DATABASE_URL` | obligatoria | `postgresql://…@<host interno>:5432/desertica_api` |
 | `JWT_ACCESS_SECRET` | obligatoria, secreto | Cadena larga aleatoria, distinta por entorno. |
+| `DATA_ENCRYPTION_KEY` | obligatoria, secreto | `openssl rand -base64 32`, distinta por entorno. Cifra las notas médicas: guárdala también fuera de Coolify; si se pierde, esas notas no se pueden leer. No se cambia sin recifrar. |
+| `LINK_SIGNING_SECRET` | recomendada, secreto | Cadena aleatoria de 32+ caracteres para los enlaces de los PDF. Sin ella se deriva de `JWT_ACCESS_SECRET`. |
+| `SESSION_MAX_HOURS`, `REAUTH_MAX_AGE_MINUTES` | opcionales | Por defecto 12 h de sesión y 10 min para las acciones delicadas. |
 | `GOOGLE_CLIENT_ID` | obligatoria | Login del backoffice. |
 | `ALLOWED_EMAIL_DOMAIN` | por defecto `desertica.pe` | Dominio de Google Workspace de la empresa. |
 | `CORS_ORIGINS` | obligatoria | Origen del backoffice (`https://admin.<dominio>`). Lista separada por comas. |
@@ -153,6 +156,7 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `MAIL_DRIVER` | `smtp` | Obligatorio en producción. |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | obligatorias | Relay de Google Workspace; `MAIL_REPLY_TO` y `STAFF_NOTIFY_EMAIL` opcionales. |
 | `CMS_URL`, `CMS_API_TOKEN` | URL interna del CMS | Token de solo lectura. |
+| `CMS_WEBHOOK_SECRET` | secreto, 32+ caracteres (`openssl rand -hex 32`) | El mismo valor va en la cabecera `X-Webhook-Secret` del webhook de Strapi (§8). Vacío = webhook apagado (responde 503) y los tours solo se sincronizan con el botón. |
 | `PAYMENT_GATEWAY_MODE` | `live` | Obligatorio en producción. En staging se usan **claves de prueba**, no un modo simulado. |
 | `STRIPE_SECRET_KEY`, `STRIPE_PUBLISHABLE_KEY`, `STRIPE_WEBHOOK_SECRET` | **vacías** | Stripe está apagado: con `STRIPE_SECRET_KEY` vacía el API no lo ofrece y la web no lo muestra ni carga su script. Para volver a usarlo basta con llenarlas (ver §8). |
 | `CULQI_SECRET_KEY`, `CULQI_PUBLIC_KEY` | secretos | Claves de integración (`sk_test_…`, `pk_test_…`) en staging; de producción (`sk_live_…`, `pk_live_…`) en producción. Ver §8.1. |
@@ -186,6 +190,17 @@ El API valida el entorno al arrancar y **se niega a iniciar** si falta algo obli
 | `BILLING_SUNAT_CA_FILE` | Solo si la cadena TLS de SUNAT no valida con la imagen. No hay interruptor para apagar la verificación. |
 
 El certificado digital y la clave SOL **reales** solo existen en el servidor de producción. Nunca se cargan en sesiones cloud ni en Git.
+
+#### Billing en staging (configurado el 2026-11-26)
+
+- App `desertica-billing:staging` (uuid `u0ttcjimnptq2v1g6my8bonu`), mismo proyecto y entorno que las demás, GitHub App `desertica-coolify`, rama `staging`, build pack Dockerfile, puerto 8080, healthcheck `GET /health`.
+- **Sin dominio público** (Coolify pone uno `sslip.io` al crearla: se borró). Alias de red `desertica-billing`, así que el API la alcanza en `http://desertica-billing:8080` por la red `coolify`.
+- Volumen persistente en `/var/lib/billing` (SQLite y archivos).
+- `BILLING_ENV=BETA`, `BILLING_GATEWAY=greenter` (SUNAT beta de verdad), `BILLING_STORAGE_DIR=/var/lib/billing`, `BILLING_SOL_USER`/`BILLING_SOL_PASSWORD` con las credenciales públicas de beta de la guía de Greenter. `BILLING_ISSUER_*` sin definir: en BETA quedan los de prueba (RUC `20000000001`), el único que acepta SUNAT beta con esas credenciales.
+- Certificado: autofirmado de prueba (PEM con clave y certificado, sin contraseña, un año de vigencia), generado con `openssl req -x509` y montado como **archivo** de Coolify en `/run/secrets/billing-beta-cert.pem` (`BILLING_CERT_PATH`). SUNAT beta no verifica la cadena. Para renovarlo, generar otro igual y reemplazar el contenido del archivo en Coolify.
+- `BILLING_SERVICE_TOKEN`: aleatorio de 32 bytes (hex), el mismo en billing y en el API. Solo vive en Coolify.
+- En el API de staging: `BILLING_URL=http://desertica-billing:8080`, `BILLING_SERVICE_TOKEN` y `DOCUMENT_WORKER_SECONDS=15` (el valor por defecto; antes estaba en `0`, worker apagado).
+- Verificado: billing arranca sano (el arranque valida configuración y certificado y el healthcheck de Coolify pasa) y el API arranca sin errores con el worker encendido. **No verificado**: una emisión de punta a punta. Necesita en el backoffice una Empresa activa con sus series (`B001`, `F001`) y una reserva con pago confirmado; el worker solo llama a billing cuando hay trabajos.
 
 ### 5.3 `desertica-web`
 
@@ -234,6 +249,7 @@ El certificado digital y la clave SOL **reales** solo existen en el servidor de 
 |---|---|---|
 | Stripe (apagado por ahora) | Panel de Stripe (modo prueba), URL `https://api-stg.<dominio>/api/webhooks/stripe` | Eventos: `payment_intent.succeeded`, `.payment_failed`, `.canceled`, `.requires_action`; `refund.created`, `.updated`, `.failed`; `charge.dispute.created`, `.updated`, `.closed`, `.funds_withdrawn`, `.funds_reinstated`. El secreto va en `STRIPE_WEBHOOK_SECRET`. |
 | Culqi | CulqiPanel → **Eventos** → **Webhooks** → **+Añadir**, URL `https://api-stg.desertica.pe/api/webhooks/culqi` | Ver §8.1. Culqi no firma sus webhooks: el API consulta cada evento a Culqi con la clave secreta antes de creerlo, así que no hay secreto que copiar. |
+| CMS (Strapi) | Admin del CMS de staging > Settings > Webhooks, URL `https://api-stg.<dominio>/api/webhooks/cms` (o la URL interna del API si el CMS la alcanza) | Eventos `Entry: Publish` y `Unpublish`; cabecera `X-Webhook-Secret` = `CMS_WEBHOOK_SECRET`. Al publicar o despublicar un tour el API lo sincroniza solo (crea inactivo, refresca título, desactiva). Pasos en `docs/WEBHOOKS.md` del CMS. `Trigger` debe responder 200. Si Cloudflare tiene reglas anti-bots delante del API, dejar pasar esa ruta. |
 | Google (login) | Consola de Google Cloud | Cliente OAuth tipo "Aplicación web"; origen JS autorizado = URL del backoffice. |
 | Apple Pay | Panel de Stripe | Registrar el dominio del sitio y publicar el archivo de verificación que Stripe entrega, en la raíz del sitio. |
 | Correo | Admin de Google Workspace | Autorizar la IP del servidor en el relay SMTP y configurar SPF, DKIM y DMARC del dominio. |

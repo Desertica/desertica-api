@@ -119,7 +119,7 @@ export class AuthController {
   ): Promise<void> {
     this.assertTrustedOrigin(req);
     const token = readCookie(req, REFRESH_COOKIE);
-    if (token) await this.auth.logout(token);
+    if (token) await this.auth.logout(token, req.ip);
     clearRefreshCookie(res, this.secure);
   }
 

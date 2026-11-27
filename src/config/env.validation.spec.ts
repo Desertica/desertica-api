@@ -27,6 +27,27 @@ describe('envSchema', () => {
     expect(error?.message).toMatch(/PUBLIC_WEB_URL/);
     expect(error?.message).toMatch(/TRUST_PROXY/);
     expect(error?.message).toMatch(/STAFF_NOTIFY_EMAIL/);
+    expect(error?.message).toMatch(/DATA_ENCRYPTION_KEY/);
+  });
+
+  it('only accepts a 32-byte base64 data key and defaults the session limits', () => {
+    const short = envSchema.validate({
+      ...base,
+      DATA_ENCRYPTION_KEY: Buffer.alloc(16).toString('base64'),
+    });
+    expect(short.error?.message).toMatch(/DATA_ENCRYPTION_KEY/);
+    const ok = envSchema.validate(base);
+    expect(
+      Buffer.from(
+        (ok.value as { DATA_ENCRYPTION_KEY: string }).DATA_ENCRYPTION_KEY,
+        'base64',
+      ),
+    ).toHaveLength(32);
+    expect(ok.value as unknown).toMatchObject({
+      SESSION_MAX_HOURS: 12,
+      REAUTH_MAX_AGE_MINUTES: 10,
+      LINK_SIGNING_SECRET: '',
+    });
   });
 
   it('accepts a complete production config', () => {
@@ -35,6 +56,7 @@ describe('envSchema', () => {
       NODE_ENV: 'production',
       CORS_ORIGINS: 'https://desertica.pe',
       JWT_ACCESS_SECRET: 'x'.repeat(40),
+      DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
       TRUST_PROXY: 2,
       STAFF_NOTIFY_EMAIL: 'ops@desertica.pe',
       TURNSTILE_SECRET_KEY: 'ts',
@@ -77,6 +99,7 @@ describe('envSchema', () => {
         NODE_ENV: 'production',
         CORS_ORIGINS: 'https://desertica.pe',
         JWT_ACCESS_SECRET: 'x'.repeat(40),
+        DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
         TRUST_PROXY: 2,
         STAFF_NOTIFY_EMAIL: 'ops@desertica.pe',
         TURNSTILE_SECRET_KEY: 'ts',
@@ -119,6 +142,7 @@ describe('envSchema', () => {
         NODE_ENV: 'production',
         CORS_ORIGINS: 'https://desertica.pe',
         JWT_ACCESS_SECRET: 'x'.repeat(40),
+        DATA_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
         AUTH_ALLOW_FAKE_GOOGLE: true,
       },
       { abortEarly: false },

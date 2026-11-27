@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import {
   ConflictException,
   Inject,
@@ -445,7 +446,7 @@ export class DocumentsService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `Auto-issue for payment ${paymentId} failed: ${message}`,
+        `Auto-issue for payment ${paymentId} failed: ${describeError(error)}`,
       );
       await this.alertOnce('document_auto_issue_failed', {
         paymentId,

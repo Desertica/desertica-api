@@ -12,12 +12,18 @@ import { Role, User } from '../../generated/prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { toUserDto, UserDto } from '../users/user.mapper';
-import { GOOGLE_VERIFIER, type GoogleIdTokenVerifier } from './google-verifier';
+import {
+  GOOGLE_VERIFIER,
+  type GoogleIdentity,
+  type GoogleIdTokenVerifier,
+} from './google-verifier';
 
 /** Cuerpo de la sesión (el refresh token viaja aparte, en la cookie). */
 export interface Session {
   accessToken: string;
   expiresIn: number;
+  /** Fin absoluto de la sesión (ISO 8601): después hay que volver a entrar con Google. */
+  sessionExpiresAt: string;
   user: UserDto;
 }
 
@@ -50,33 +56,62 @@ export class AuthService {
   ) {}
 
   async loginWithGoogle(idToken: string, ip?: string): Promise<IssuedSession> {
-    const identity = await this.google.verify(idToken);
     const domain = this.config
       .get('ALLOWED_EMAIL_DOMAIN', { infer: true })
       .toLowerCase();
+    // Cada rechazo queda en la bitácora; el correo solo si es de la empresa (no se guardan ajenos).
+    const fail = async (reason: string, email?: string, userId?: string) => {
+      await this.audit.record({
+        actorUserId: userId ?? null,
+        action: 'auth.login_failed',
+        entity: 'User',
+        entityId: userId ?? 'unknown',
+        after: {
+          reason,
+          ...(email?.endsWith(`@${domain}`) ? { email } : {}),
+        },
+        ip,
+      });
+    };
+    let identity: GoogleIdentity;
+    try {
+      identity = await this.google.verify(idToken);
+    } catch (error) {
+      await fail('invalid_google_token');
+      throw error;
+    }
     const email = identity.email.trim().toLowerCase();
 
     // Mismo mensaje para todo rechazo: no revela si el correo está dado de alta.
     const denied = new ForbiddenException('Access denied');
-    if (!identity.emailVerified) throw denied;
-    if (email.split('@')[1] !== domain) throw denied;
-    if (
-      identity.hostedDomain &&
-      identity.hostedDomain.toLowerCase() !== domain
-    ) {
-      throw denied;
-    }
-
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: { role: true },
     });
-    if (!user || !user.active) throw denied;
-    if (user.googleSub && user.googleSub !== identity.sub) throw denied;
+    const reason = !identity.emailVerified
+      ? 'email_not_verified'
+      : email.split('@')[1] !== domain
+        ? 'wrong_domain'
+        : // Solo cuentas de Google Workspace de la empresa: una cuenta personal de Google
+          // creada con una dirección de la empresa no trae `hd`.
+          identity.hostedDomain?.toLowerCase() !== domain
+          ? 'not_workspace_account'
+          : !user
+            ? 'not_invited'
+            : !user.active
+              ? 'inactive'
+              : user.googleSub && user.googleSub !== identity.sub
+                ? 'google_account_mismatch'
+                : null;
+    if (reason || !user) {
+      await fail(reason ?? 'not_invited', email, user?.id);
+      throw denied;
+    }
 
+    const now = new Date();
     const updated = await this.prisma.user.update({
       where: { id: user.id },
-      data: { googleSub: identity.sub, lastLoginAt: new Date() },
+      data: { googleSub: identity.sub, lastLoginAt: now },
       include: { role: true },
     });
     await this.audit.record({
@@ -86,7 +121,7 @@ export class AuthService {
       entityId: user.id,
       ip,
     });
-    return this.issueSession(updated);
+    return this.issueSession(updated, now);
   }
 
   /** Rota el refresh token: el usado queda revocado y se emite uno nuevo. */
@@ -129,14 +164,33 @@ export class AuthService {
     });
     if (claimed.count !== 1) throw new RefreshRaceException();
 
-    return this.issueSession(stored.user);
+    // La sesión nueva hereda el login original: renovar no la alarga.
+    return this.issueSession(
+      stored.user,
+      stored.authenticatedAt,
+      stored.expiresAt,
+    );
   }
 
-  async logout(refreshToken: string): Promise<void> {
-    await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: hashToken(refreshToken), revokedAt: null },
+  async logout(refreshToken: string, ip?: string): Promise<void> {
+    const stored = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: hashToken(refreshToken) },
+      select: { id: true, userId: true, revokedAt: true },
+    });
+    if (!stored || stored.revokedAt) return;
+    const { count } = await this.prisma.refreshToken.updateMany({
+      where: { id: stored.id, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+    if (count === 1) {
+      await this.audit.record({
+        actorUserId: stored.userId,
+        action: 'auth.logout',
+        entity: 'User',
+        entityId: stored.userId,
+        ip,
+      });
+    }
   }
 
   async me(userId: string): Promise<UserDto> {
@@ -149,30 +203,55 @@ export class AuthService {
 
   private async issueSession(
     user: User & { role: Role },
+    authenticatedAt: Date,
+    sessionEndsAt?: Date,
   ): Promise<IssuedSession> {
-    const expiresIn = this.config.get('JWT_ACCESS_TTL_SECONDS', {
-      infer: true,
-    });
+    const now = Date.now();
+    const ttlDays = this.config.get('REFRESH_TTL_DAYS', { infer: true });
+    const maxHours = this.config.get('SESSION_MAX_HOURS', { infer: true });
+    const endsAt = Math.min(
+      sessionEndsAt?.getTime() ?? Infinity,
+      now + ttlDays * 86_400_000,
+      authenticatedAt.getTime() + maxHours * 3_600_000,
+    );
+    const remainingSeconds = Math.floor((endsAt - now) / 1000);
+    if (remainingSeconds <= 0) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+    // El token de acceso tampoco vive más allá del fin de la sesión.
+    const expiresIn = Math.min(
+      this.config.get('JWT_ACCESS_TTL_SECONDS', { infer: true }),
+      remainingSeconds,
+    );
     const accessToken = await this.jwt.signAsync(
-      { sub: user.id, email: user.email },
+      {
+        sub: user.id,
+        email: user.email,
+        auth_time: Math.floor(authenticatedAt.getTime() / 1000),
+      },
       {
         secret: this.config.get('JWT_ACCESS_SECRET', { infer: true }),
         expiresIn,
       },
     );
     const refreshToken = randomBytes(32).toString('base64url');
-    const ttlDays = this.config.get('REFRESH_TTL_DAYS', { infer: true });
     await this.prisma.refreshToken.create({
       data: {
         userId: user.id,
         tokenHash: hashToken(refreshToken),
-        expiresAt: new Date(Date.now() + ttlDays * 86_400_000),
+        expiresAt: new Date(endsAt),
+        authenticatedAt,
       },
     });
     return {
-      session: { accessToken, expiresIn, user: toUserDto(user) },
+      session: {
+        accessToken,
+        expiresIn,
+        sessionExpiresAt: new Date(endsAt).toISOString(),
+        user: toUserDto(user),
+      },
       refreshToken,
-      refreshMaxAgeSeconds: ttlDays * 86_400,
+      refreshMaxAgeSeconds: remainingSeconds,
     };
   }
 }

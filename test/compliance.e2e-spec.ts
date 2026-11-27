@@ -1,6 +1,9 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
+import { ConfigService } from '@nestjs/config';
+import { decryptField } from '../src/common/crypto/field-crypto';
+import { WaiversService } from '../src/modules/compliance/waivers.service';
 import { LogMailer } from '../src/modules/notifications/log-mailer';
 import { MAILER } from '../src/modules/notifications/mailer';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -54,6 +57,8 @@ describe('Cumplimiento (e2e)', () => {
   afterAll(async () => {
     await app.close();
   });
+  const dataKey = () =>
+    app.get(ConfigService).get<string>('DATA_ENCRYPTION_KEY')!;
 
   describe('legal documents', () => {
     it('publishes versions with an immutable snapshot of the CMS text', async () => {
@@ -471,8 +476,11 @@ describe('Cumplimiento (e2e)', () => {
       expect(row).toMatchObject({
         status: 'SIGNED',
         signerName: 'Ana Pérez',
-        medicalNotes: 'Asma leve',
+        medicalNotes: expect.stringMatching(/^enc:v1:/) as unknown,
       });
+      // En la base van cifradas; con la clave se recupera el texto.
+      expect(row.medicalNotes).not.toContain('Asma');
+      expect(decryptField(dataKey(), row.medicalNotes!)).toBe('Asma leve');
       expect(row.signedAt).toBeTruthy();
       expect(row.passenger).toMatchObject({
         emergencyContactName: 'Carlos Pérez',
@@ -509,6 +517,17 @@ describe('Cumplimiento (e2e)', () => {
       expect(rows.find((p) => p.name === 'Luis Pérez')).toMatchObject({
         waiverStatus: 'PENDING',
       });
+
+      // Sin waivers:read (Solo lectura) el manifiesto sale sin notas médicas.
+      const readonly = await loginAs(app, 'readonly');
+      const limited = await http()
+        .get(`/api/departures/${dep.id}/manifest`)
+        .set(readonly.auth)
+        .expect(200);
+      const ana = (limited.body as { passengers: Body[] }).passengers.find(
+        (p) => p.name === 'Ana Pérez',
+      );
+      expect(ana).toMatchObject({ waiverStatus: 'SIGNED', medicalNotes: null });
     });
 
     it('does not credit one passenger with the signature of another seat', async () => {
@@ -618,6 +637,127 @@ describe('Cumplimiento (e2e)', () => {
           accepted: true,
         })
         .expect(409);
+    });
+  });
+
+  describe('waiver protections', () => {
+    const signBody = {
+      signerName: 'X Y',
+      signerDocType: 'DNI',
+      signerDocNumber: '12345678',
+      medicalNotes: 'Hipertensión',
+      accepted: true,
+    };
+    const staffBooking = async (departureId: string) => {
+      const created = await http()
+        .post('/api/bookings')
+        .set(operator.auth)
+        .send({
+          departureId,
+          currency: 'USD',
+          adults: 1,
+          customer: customerInput(),
+          billing: billingBoleta,
+          sendConfirmation: false,
+        })
+        .expect(201);
+      const body = created.body as Body;
+      const waiver = await prisma.waiver.findFirstOrThrow({
+        where: { bookingId: body.id as string },
+      });
+      return {
+        id: body.id as string,
+        customerId: (body.customer as Body).id as string,
+        waiver,
+      };
+    };
+
+    it('stops accepting signatures two days after the tour started', async () => {
+      const fx = await createCatalog(app);
+      const dep = await fx.departure();
+      const { waiver } = await staffBooking(dep.id);
+      await prisma.departure.update({
+        where: { id: dep.id },
+        data: { startsAt: new Date(Date.now() - 3 * 86_400_000) },
+      });
+      await http()
+        .post(`/api/public/waivers/${waiver.token}/sign`)
+        .send(signBody)
+        .expect(409);
+      await prisma.departure.update({
+        where: { id: dep.id },
+        data: { startsAt: new Date(Date.now() - 86_400_000) },
+      });
+      await http()
+        .post(`/api/public/waivers/${waiver.token}/sign`)
+        .send(signBody)
+        .expect(200);
+    });
+
+    it('deletes pending waivers when the customer is erased, so the old link cannot be signed', async () => {
+      const fx = await createCatalog(app);
+      const dep = await fx.departure();
+      const { id, customerId, waiver } = await staffBooking(dep.id);
+      await http()
+        .post(`/api/bookings/${id}/cancel`)
+        .set(admin.auth)
+        .send({ reason: 'x', refund: 'POLICY' })
+        .expect(200);
+      const link = await prisma.paymentLink.create({
+        data: {
+          token: `pl-${rand()}-${rand()}`,
+          bookingId: id,
+          kind: 'BALANCE',
+          currency: 'USD',
+          amountCents: 100,
+          expiresAt: new Date(Date.now() + 86_400_000),
+        },
+      });
+      await http()
+        .post(`/api/customers/${customerId}/erase`)
+        .set(admin.auth)
+        .expect(204);
+      expect(
+        await prisma.waiver.count({
+          where: { bookingId: id, status: 'PENDING' },
+        }),
+      ).toBe(0);
+      await http().get(`/api/public/waivers/${waiver.token}`).expect(404);
+      // Los enlaces de pago vigentes quedan inutilizables.
+      expect(
+        (await prisma.paymentLink.findUniqueOrThrow({ where: { id: link.id } }))
+          .usedAt,
+      ).not.toBeNull();
+      await http()
+        .post(`/api/public/waivers/${waiver.token}/sign`)
+        .send(signBody)
+        .expect(404);
+    });
+
+    it('encrypts medical notes saved before encryption when the app starts', async () => {
+      const fx = await createCatalog(app);
+      const dep = await fx.departure();
+      const { waiver } = await staffBooking(dep.id);
+      await prisma.waiver.update({
+        where: { id: waiver.id },
+        data: {
+          status: 'SIGNED',
+          signerName: 'X Y',
+          medicalNotes: 'Epilepsia',
+        },
+      });
+      await app.get(WaiversService).onApplicationBootstrap();
+      const row = await prisma.waiver.findUniqueOrThrow({
+        where: { id: waiver.id },
+      });
+      expect(row.medicalNotes).toMatch(/^enc:v1:/);
+      expect(decryptField(dataKey(), row.medicalNotes!)).toBe('Epilepsia');
+      // Idempotente: no vuelve a cifrar lo ya cifrado.
+      await app.get(WaiversService).onApplicationBootstrap();
+      expect(
+        (await prisma.waiver.findUniqueOrThrow({ where: { id: waiver.id } }))
+          .medicalNotes,
+      ).toBe(row.medicalNotes);
     });
   });
 

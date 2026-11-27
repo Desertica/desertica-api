@@ -1,3 +1,4 @@
+import { describeError } from '../../common/logger/sanitize';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EnvVars } from '../../config/env.validation';
@@ -32,7 +33,7 @@ export class StaffAlertsService {
       );
     } catch (error) {
       this.logger.error(
-        `Could not send alert ${code}: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not send alert ${code}: ${describeError(error)}`,
       );
     }
   }

@@ -259,7 +259,7 @@ export class BookingCreationService {
               currency: booking.currency,
               acceptedLegalDocumentIds: docs.map((d) => d.id),
             },
-            ip: ctx.ip,
+            // Sin la IP del cliente: la bitácora es inmutable y no se limpia al borrar al cliente.
           },
           tx,
         );

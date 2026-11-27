@@ -68,7 +68,7 @@ export interface TestSession {
 /** Da de alta (directo en la base) y autentica a un usuario del staff. */
 export async function loginAs(
   app: INestApplication<App>,
-  roleKey: 'admin' | 'operator',
+  roleKey: 'admin' | 'operator' | 'finance' | 'readonly',
 ): Promise<TestSession> {
   const prisma = app.get(PrismaService);
   const role = await prisma.role.findUniqueOrThrow({ where: { key: roleKey } });

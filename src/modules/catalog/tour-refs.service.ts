@@ -104,14 +104,16 @@ export class TourRefsService {
    * copian del CMS solo si aquí siguen vacíos (el CMS está dejando de tener esos campos).
    * Un tour que ya no está publicado en el CMS queda inactivo (no se borra) y uno nuevo nace
    * inactivo hasta que operaciones le ponga precios y fechas. Reactivar es manual.
+   * Con `only` (webhook del CMS) se toca solo ese slug; sin actor, la auditoría queda sin usuario.
    */
-  async sync(actorId: string, ip?: string) {
+  async sync(actorId: string | null, ip?: string, only?: string) {
     // Un tour publicado solo en español también cuenta: se unen los dos idiomas.
     const [en, es] = await Promise.all([
       this.cms.listTours({ fresh: true }),
       this.cms.listTours({ fresh: true, locale: 'es' }),
     ]);
-    const tours = [...new Map([...es, ...en].map((t) => [t.slug, t])).values()];
+    const all = [...new Map([...es, ...en].map((t) => [t.slug, t])).values()];
+    const tours = only ? all.filter((t) => t.slug === only) : all;
     const meetingOf = (list: typeof en, slug: string) =>
       list.find((t) => t.slug === slug)?.meeting;
     const empty = (v: unknown) =>
@@ -181,11 +183,15 @@ export class TourRefsService {
           updated++;
         }
       }
-      // shortcut: sin webhook, esto corre solo al sincronizar; automatizarlo si se despublica a menudo.
       // Con el CMS vacío no se desactiva nada: es más probable una falla que "no hay tours".
-      if (tours.length) {
+      if (all.length) {
         const gone = await tx.tourRef.updateMany({
-          where: { active: true, slug: { notIn: tours.map((t) => t.slug) } },
+          where: {
+            active: true,
+            slug: only
+              ? { in: tours.length ? [] : [only] }
+              : { notIn: tours.map((t) => t.slug) },
+          },
           data: { active: false, cmsSyncedAt: now },
         });
         deactivated = gone.count;
@@ -195,7 +201,7 @@ export class TourRefsService {
           actorUserId: actorId,
           action: 'tourRef.sync',
           entity: 'TourRef',
-          entityId: 'all',
+          entityId: only ?? 'all',
           after: { created, updated, deactivated },
           ip,
         },

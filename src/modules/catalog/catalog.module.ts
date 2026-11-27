@@ -12,6 +12,7 @@ import {
   PublicCatalogController,
   TourRefsController,
 } from './catalog.controllers';
+import { CmsWebhookController } from './cms-webhook.controller';
 import { DeparturesService } from './departures.service';
 import { ManifestService } from './manifest.service';
 import { PricesService } from './prices.service';
@@ -27,6 +28,7 @@ import { TourRefsService } from './tour-refs.service';
     BlackoutsController,
     CancellationPoliciesController,
     PublicCatalogController,
+    CmsWebhookController,
   ],
   providers: [
     TourRefsService,

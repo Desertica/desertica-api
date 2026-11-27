@@ -234,7 +234,10 @@ model RefreshToken {
   userId    String
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokenHash String    @unique
+  /// Fin absoluto de la sesión: se hereda al rotar y nunca pasa de `authenticatedAt` + `SESSION_MAX_HOURS`.
   expiresAt DateTime
+  /// Login con Google que abrió la sesión; se hereda al rotar (lo usan las acciones delicadas).
+  authenticatedAt DateTime @default(now())
   revokedAt DateTime?
   createdAt DateTime  @default(now())
 
