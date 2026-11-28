@@ -234,6 +234,7 @@ export class BookingLifecycleService {
       version?: number;
       tiers?: CancellationTier[];
       depositRefundable?: boolean;
+      customerRefunds?: boolean;
     };
     const hoursUntil =
       (booking.departure.startsAt.getTime() - now.getTime()) / 3_600_000;
@@ -260,6 +261,16 @@ export class BookingLifecycleService {
         policyVersion,
         reason: refundCents === 0 ? 'NOTHING_TO_REFUND' : null,
         audit: { mode } as Prisma.InputJsonValue,
+      };
+    }
+    if (snapshot.customerRefunds === false) {
+      return {
+        refundCents: 0,
+        refundPercent: 0,
+        tier: null,
+        policyVersion,
+        reason: booking.paidCents === 0 ? 'NO_PAYMENTS' : 'NO_CUSTOMER_REFUNDS',
+        audit: toJson({ mode: 'POLICY', customerRefunds: false }),
       };
     }
     const result = computeRefund({

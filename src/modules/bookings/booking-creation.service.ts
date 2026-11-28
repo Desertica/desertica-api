@@ -543,16 +543,21 @@ export class BookingCreationService {
       p.source === 'MANUAL',
     );
     const policy = p.tourRef.cancellationPolicy;
-    const cancellationSnapshot = policy
-      ? {
-          policyId: policy.id,
-          key: policy.key,
-          name: policy.name,
-          version: policy.version,
-          tiers: policy.tiers,
-          depositRefundable: policy.depositRefundable,
-        }
-      : { policyId: null, tiers: [], depositRefundable: false };
+    const cancellationSnapshot = {
+      ...(policy
+        ? {
+            policyId: policy.id,
+            key: policy.key,
+            name: policy.name,
+            version: policy.version,
+            tiers: policy.tiers,
+            depositRefundable: policy.depositRefundable,
+          }
+        : { policyId: null, tiers: [], depositRefundable: false }),
+      // Política legal: sin reembolsos por decisión del cliente. Las reservas
+      // anteriores no llevan esta marca y conservan sus tramos.
+      customerRefunds: false,
+    };
 
     let reference = generateReference();
     while (await tx.booking.findUnique({ where: { reference } })) {

@@ -66,6 +66,20 @@ describe('Reservas (e2e)', () => {
     ...over,
   });
 
+  /**
+   * Deja la reserva como las hechas antes de la regla "sin reembolsos por
+   * decisión del cliente": su política guardada sin la marca `customerRefunds`.
+   */
+  async function asLegacyBooking(id: string) {
+    const b = await prisma.booking.findUniqueOrThrow({ where: { id } });
+    const legacy = { ...(b.cancellationSnapshot as Body) };
+    delete legacy.customerRefunds;
+    await prisma.booking.update({
+      where: { id },
+      data: { cancellationSnapshot: legacy },
+    });
+  }
+
   /** Reserva web completa (bloqueo + reserva). */
   async function webBooking(
     departureId: string,
@@ -1274,10 +1288,11 @@ describe('Reservas (e2e)', () => {
       [30, 'POLICY', 10000, 50],
       [3, 'POLICY', 0, 0],
     ])(
-      'refunds by tier: %ih before with %s => %i cents (%i%%)',
+      'refunds an earlier booking by tier: %ih before with %s => %i cents (%i%%)',
       async (hours, mode, expected, percent) => {
         const dep = await fx.departure({ startsAt: inHours(hours) });
         const { id } = await webBooking(dep.id);
+        await asLegacyBooking(id);
         await payFull(id);
         const res = await http()
           .post(`/api/bookings/${id}/cancel`)
@@ -1327,9 +1342,25 @@ describe('Reservas (e2e)', () => {
       expect((res.body as Body).refundDueCents).toBe(0);
     });
 
+    it('never refunds a new booking by policy, however early it is cancelled', async () => {
+      const dep = await fx.departure({ startsAt: inHours(100) });
+      const { id } = await webBooking(dep.id);
+      await payFull(id);
+      const res = await http()
+        .post(`/api/bookings/${id}/cancel`)
+        .set(operator.auth)
+        .send({ reason: 'Cambio de planes', refund: 'POLICY' })
+        .expect(200);
+      expect((res.body as Body).refundDueCents).toBe(0);
+      expect(
+        await prisma.refund.count({ where: { payment: { bookingId: id } } }),
+      ).toBe(0);
+    });
+
     it('splits the refund over several payments, newest first', async () => {
       const dep = await fx.departure({ startsAt: inHours(100) });
       const { id } = await webBooking(dep.id);
+      await asLegacyBooking(id);
       await payFull(id, 5000);
       await payFull(id, 15000);
       await http()
@@ -2211,10 +2242,11 @@ describe('Reservas (e2e)', () => {
         [100, 100, 20000],
         [30, 50, 10000],
       ])(
-        'quotes the policy tier at %ih (%i%% => %i)',
+        'quotes the stored tier of an earlier booking at %ih (%i%% => %i)',
         async (hours, percent, cents) => {
           const dep = await fx.departure({ startsAt: inHours(hours) });
           const { id } = await webBooking(dep.id);
+          await asLegacyBooking(id);
           await payFull(id);
           const res = await cq(id).expect(200);
           expect(res.body as Body).toMatchObject({
@@ -2238,8 +2270,18 @@ describe('Reservas (e2e)', () => {
       );
 
       it('explains why nothing is refunded, supports FULL and NONE and matches cancel', async () => {
+        const early = await fx.departure({ startsAt: inHours(100) });
+        const fresh = await webBooking(early.id);
+        await payFull(fresh.id);
+        expect((await cq(fresh.id).expect(200)).body as Body).toMatchObject({
+          refundCents: 0,
+          refundPercent: 0,
+          tier: null,
+          reason: 'NO_CUSTOMER_REFUNDS',
+        });
         const late = await fx.departure({ startsAt: inHours(3) });
         const { id } = await webBooking(late.id);
+        await asLegacyBooking(id);
         await payFull(id);
         expect((await cq(id).expect(200)).body as Body).toMatchObject({
           refundCents: 0,
