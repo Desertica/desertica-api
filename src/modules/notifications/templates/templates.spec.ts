@@ -206,9 +206,15 @@ describe('email templates', () => {
       expect(en).toContain('no refunds if you cancel, including the deposit');
       expect(en).toContain('100% refund or a new date');
     }
-    expect(
-      renderEmail('booking_confirmed', 'es', SAMPLES.booking_confirmed).text,
-    ).toContain('Por pagar');
+    const confirmed = renderEmail(
+      'booking_confirmed',
+      'es',
+      SAMPLES.booking_confirmed,
+    ).text.replace(/\u00a0/g, ' ');
+    expect(confirmed).toContain('Por pagar');
+    expect(confirmed).toContain(
+      'Paga el resto (USD 140.00) el día del tour: 10 de noviembre de 2026.',
+    );
   });
 
   it('calls the first part of a two-part payment an adelanto', () => {
@@ -217,6 +223,7 @@ describe('email templates', () => {
       kind: 'DEPOSIT',
     });
     expect(mail.text).toContain('Monto del adelanto');
+    expect(mail.text).toContain('El resto se paga el día del tour.');
   });
 
   it('escapes everything that comes from a person', () => {

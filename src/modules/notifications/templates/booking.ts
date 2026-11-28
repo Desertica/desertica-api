@@ -1,4 +1,11 @@
-import { formatDateTime, formatMoney, num, str, strList } from './format';
+import {
+  formatDate,
+  formatDateTime,
+  formatMoney,
+  num,
+  str,
+  strList,
+} from './format';
 import type { Block, EmailContent, Lang } from './layout';
 
 type Data = Record<string, unknown>;
@@ -155,6 +162,19 @@ export const bookingConfirmed: Builder = (lang, d) => {
         ),
       },
       { type: 'facts', rows: facts },
+      ...(pending && str(d, 'startsAt')
+        ? [
+            {
+              type: 'p' as const,
+              // Regla del dueño: el resto se paga el día del tour.
+              text: pick(
+                lang,
+                `Paga el resto (${pending}) el día del tour: ${formatDate(str(d, 'startsAt'), lang)}.`,
+                `Pay the rest (${pending}) on the day of the tour: ${formatDate(str(d, 'startsAt'), lang)}.`,
+              ),
+            },
+          ]
+        : []),
       cancellationPolicy(lang, d),
     ],
   };
@@ -370,6 +390,18 @@ export const paymentLink: Builder = (lang, d) => {
         label: pick(lang, 'Pagar ahora', 'Pay now'),
         url: str(d, 'paymentUrl'),
       },
+      ...(kind === 'DEPOSIT'
+        ? [
+            {
+              type: 'p' as const,
+              text: pick(
+                lang,
+                'El resto se paga el día del tour.',
+                'The rest is paid on the day of the tour.',
+              ),
+            },
+          ]
+        : []),
       {
         type: 'p',
         text: pick(
