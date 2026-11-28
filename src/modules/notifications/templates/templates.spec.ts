@@ -199,6 +199,7 @@ describe('email templates', () => {
       const en = renderEmail(template, 'en', SAMPLES[template]).text;
       expect(es).toContain('sin reembolsos si cancelas, tampoco del adelanto');
       expect(es).toContain('cambiar la fecha gratis hasta 24 h antes');
+      expect(es).toContain('después ya no hay cambios');
       expect(es).toContain(
         'Política completa: https://desertica.pe/es/cancellation',
       );

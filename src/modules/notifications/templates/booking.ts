@@ -31,8 +31,8 @@ function cancellationPolicy(lang: Lang, d: Data): Block {
   const url = str(d, 'policyUrl');
   const text = pick(
     lang,
-    'Política de cancelación: sin reembolsos si cancelas, tampoco del adelanto. Puedes cambiar la fecha gratis hasta 24 h antes del tour. Si el tour no sale por clima, orden de una autoridad o causa del operador, te devolvemos el 100 % o te damos otra fecha.',
-    'Cancellation policy: no refunds if you cancel, including the deposit. You can change the date for free up to 24 h before the tour. If the tour can’t run because of the weather, an order from the authorities or the operator, you get a 100% refund or a new date.',
+    'Política de cancelación: sin reembolsos si cancelas, tampoco del adelanto. Puedes cambiar la fecha gratis hasta 24 h antes del tour; después ya no hay cambios. Si el tour no sale por clima, orden de una autoridad o causa del operador, te devolvemos el 100 % o te damos otra fecha.',
+    'Cancellation policy: no refunds if you cancel, including the deposit. You can change the date for free up to 24 h before the tour; after that, no changes. If the tour can’t run because of the weather, an order from the authorities or the operator, you get a 100% refund or a new date.',
   );
   return {
     type: 'p',
