@@ -215,6 +215,11 @@ export class BookingPaymentsService {
           currency: b.currency,
           totalCents: b.totalCents,
           paidCents: b.paidCents,
+          pendingCents: bookingPending(b),
+          policyUrl: links.cancellationPolicy(
+            this.config.get('PUBLIC_WEB_URL', { infer: true }),
+            b.locale,
+          ),
         },
       },
       { bookingId },

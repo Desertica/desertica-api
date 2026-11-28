@@ -18,12 +18,16 @@ const SAMPLES: Record<string, Record<string, unknown>> = {
   booking_created: {
     ...bookingData,
     bookingUrl: 'https://desertica.pe/booking/DST-7K4Q9M?token=abc_DEF-123',
+    policyUrl: 'https://desertica.pe/es/cancellation',
     waiverUrls: [
       'https://desertica.pe/waiver/tok1',
       'https://desertica.pe/waiver/tok2',
     ],
   },
-  booking_confirmed: bookingData,
+  booking_confirmed: {
+    ...bookingData,
+    policyUrl: 'https://desertica.pe/es/cancellation',
+  },
   booking_cancelled: {
     ...bookingData,
     refundDueCents: 10000,
@@ -187,6 +191,31 @@ describe('email templates', () => {
       bookingUrl: 'https://desertica.pe/b',
     });
     expect(paid.text).not.toContain('Balance due');
+  });
+
+  it('states the one cancellation policy, with its link, when booking and when paid', () => {
+    for (const template of ['booking_created', 'booking_confirmed']) {
+      const es = renderEmail(template, 'es', SAMPLES[template]).text;
+      const en = renderEmail(template, 'en', SAMPLES[template]).text;
+      expect(es).toContain('sin reembolsos si cancelas, tampoco del adelanto');
+      expect(es).toContain('cambiar la fecha gratis hasta 24 h antes');
+      expect(es).toContain(
+        'Política completa: https://desertica.pe/es/cancellation',
+      );
+      expect(en).toContain('no refunds if you cancel, including the deposit');
+      expect(en).toContain('100% refund or a new date');
+    }
+    expect(
+      renderEmail('booking_confirmed', 'es', SAMPLES.booking_confirmed).text,
+    ).toContain('Por pagar');
+  });
+
+  it('calls the first part of a two-part payment an adelanto', () => {
+    const mail = renderEmail('payment_link', 'es', {
+      ...SAMPLES.payment_link,
+      kind: 'DEPOSIT',
+    });
+    expect(mail.text).toContain('Monto del adelanto');
   });
 
   it('escapes everything that comes from a person', () => {

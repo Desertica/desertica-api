@@ -18,4 +18,6 @@ export const links = {
     url(base, locale, `waiver/${encodeURIComponent(token)}`),
   payment: (base: string, locale: string, token: string) =>
     url(base, locale, `pay/${encodeURIComponent(token)}`),
+  cancellationPolicy: (base: string, locale: string) =>
+    url(base, locale, 'cancellation'),
 };

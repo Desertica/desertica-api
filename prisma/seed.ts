@@ -37,12 +37,9 @@ async function main() {
   policy ??= await prisma.cancellationPolicy.create({
     data: {
       key: 'standard',
-      name: 'Estándar',
-      tiers: [
-        { hoursBefore: 48, refundPercent: 100 },
-        { hoursBefore: 24, refundPercent: 50 },
-        { hoursBefore: 0, refundPercent: 0 },
-      ],
+      // Igual que el texto legal: sin reembolsos por decisión del cliente.
+      name: 'Sin reembolsos',
+      tiers: [{ hoursBefore: 0, refundPercent: 0 }],
       depositRefundable: false,
     },
   });

@@ -691,6 +691,7 @@ export class BookingCreationService {
             booking.reference,
             token,
           ),
+          policyUrl: links.cancellationPolicy(base, booking.locale),
           waiverUrls: booking.waivers
             .filter((w) => w.status === 'PENDING')
             .map((w) => links.waiver(base, booking.locale, w.token)),

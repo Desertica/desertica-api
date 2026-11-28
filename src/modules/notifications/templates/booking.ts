@@ -1,5 +1,5 @@
 import { formatDateTime, formatMoney, num, str, strList } from './format';
-import type { EmailContent, Lang } from './layout';
+import type { Block, EmailContent, Lang } from './layout';
 
 type Data = Record<string, unknown>;
 type Builder = (lang: Lang, d: Data) => EmailContent;
@@ -21,6 +21,25 @@ function tripFacts(lang: Lang, d: Data): [string, string][] {
       formatDateTime(startsAt, lang),
     ]);
   return rows;
+}
+
+/**
+ * La política de cancelación en una frase, igual que en la web (`booking.cancellationShort`) y que el texto
+ * legal publicado. Si cambia la política, cambia aquí, en la web y en el documento legal.
+ */
+function cancellationPolicy(lang: Lang, d: Data): Block {
+  const url = str(d, 'policyUrl');
+  const text = pick(
+    lang,
+    'Política de cancelación: sin reembolsos si cancelas, tampoco del adelanto. Puedes cambiar la fecha gratis hasta 24 h antes del tour. Si el tour no sale por clima, orden de una autoridad o causa del operador, te devolvemos el 100 % o te damos otra fecha.',
+    'Cancellation policy: no refunds if you cancel, including the deposit. You can change the date for free up to 24 h before the tour. If the tour can’t run because of the weather, an order from the authorities or the operator, you get a 100% refund or a new date.',
+  );
+  return {
+    type: 'p',
+    text: url
+      ? `${text} ${pick(lang, 'Política completa', 'Full policy')}: ${url}`
+      : text,
+  };
 }
 
 function money(lang: Lang, d: Data, key: string): string | null {
@@ -101,6 +120,7 @@ export const bookingCreated: Builder = (lang, d) => {
             },
           ]
         : []),
+      cancellationPolicy(lang, d),
     ],
   };
 };
@@ -111,6 +131,9 @@ export const bookingConfirmed: Builder = (lang, d) => {
   const paid = money(lang, d, 'paidCents');
   if (total) facts.push([pick(lang, 'Total', 'Total'), total]);
   if (paid) facts.push([pick(lang, 'Pagado', 'Paid'), paid]);
+  const pending =
+    (num(d, 'pendingCents') ?? 0) > 0 ? money(lang, d, 'pendingCents') : null;
+  if (pending) facts.push([pick(lang, 'Por pagar', 'Balance due'), pending]);
   return {
     subject: pick(
       lang,
@@ -132,6 +155,7 @@ export const bookingConfirmed: Builder = (lang, d) => {
         ),
       },
       { type: 'facts', rows: facts },
+      cancellationPolicy(lang, d),
     ],
   };
 };
@@ -301,7 +325,7 @@ export const paymentLink: Builder = (lang, d) => {
   const kind = str(d, 'kind');
   const kindText =
     kind === 'DEPOSIT'
-      ? pick(lang, 'depósito', 'deposit')
+      ? pick(lang, 'adelanto', 'deposit')
       : kind === 'BALANCE'
         ? pick(lang, 'saldo', 'balance')
         : pick(lang, 'pago', 'payment');
